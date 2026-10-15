@@ -12,6 +12,7 @@ from pathlib import Path
 
 from benchmark import run_bounded_process_with_metrics, run_one
 from runtime_config import ROOT, load_runtime_config
+from visualize_solution import safe_filename_component
 
 
 INSTANCES = (
@@ -110,16 +111,26 @@ def main() -> int:
     ]
     failures = 0
     for instance_path in instance_paths:
-        uid = instance_path.name.removesuffix(".instance.json")
+        instance = json.loads(instance_path.read_text(encoding="utf-8"))
+        uid = instance["instance_uid"]
         for algorithm in requested["algorithms"]:
-            solution_path = output / f"{uid}.{algorithm}.solution.json"
-            svg_path = output / f"{uid}.{algorithm}.svg"
+            stem = (
+                f"{safe_filename_component(uid)}."
+                f"{safe_filename_component(algorithm)}.rep-0000."
+                f"seed-{effective['random_seed']}"
+            )
+            solution_path = output / f"{stem}.solution.json"
+            svg_path = output / f"{stem}.svg"
             result = run_one(
                 solver, instance_path, algorithm, 0, solution_path,
                 requested, effective, global_deadline,
             )
             error = result.get("error", "")
             valid = result["status"] == "ok"
+            renderable = (
+                result["status"] in {"ok", "official_invalid"}
+                and solution_path.is_file()
+            )
             if result["status"] == "official_invalid":
                 official_value = "False"
             elif valid and effective["official_validation"]:
@@ -132,7 +143,8 @@ def main() -> int:
                 "child_process_tree_cpu_seconds": None,
                 "peak_process_tree_rss_bytes": None,
             }
-            if valid:
+            visualization_ok = False
+            if renderable:
                 try:
                     visualizer_timeout = effective["per_algorithm_timeout_seconds"]
                     if global_deadline is not None:
@@ -145,7 +157,17 @@ def main() -> int:
                         run_bounded_process_with_metrics(
                             [sys.executable, str(visualize), str(instance_path),
                              str(solution_path), "-o", str(svg_path),
-                             "--title", f"{uid} / {algorithm} / {makespan}"],
+                             "--algorithm-id", algorithm,
+                             "--status", (
+                                 "OFFICIAL_INVALID"
+                                 if result["status"] == "official_invalid"
+                                 else (
+                                     "OFFICIAL_VALID"
+                                     if effective["official_validation"]
+                                     else "VALID_FEASIBLE; OFFICIAL_CHECKER_DISABLED"
+                                 )
+                             ),
+                             *(["--overwrite"] if effective["overwrite_existing"] else [])],
                             visualizer_timeout, effective["memory_limit_mib"],
                         )
                     )
@@ -153,14 +175,14 @@ def main() -> int:
                         raise RuntimeError(limit_error)
                     if code != 0:
                         raise RuntimeError(stderr.strip() or f"visualizer exited {code}")
+                    visualization_ok = True
                 except (OSError, RuntimeError) as exception:
-                    valid = False
-                    error = str(exception)
+                    error = f"{error}; visualization: {exception}".strip("; ")
             if not valid:
                 failures += 1
             rows.append(
                 f"{uid}\t{algorithm}\t{valid}\t{official_value}\t{makespan}\t"
-                f"{svg_path if valid else ''}\t{result.get('config_report', '')}\t"
+                f"{svg_path if visualization_ok else ''}\t{result.get('config_report', '')}\t"
                 f"{_metric(result.get('wall_seconds'))}\t"
                 f"{_metric(result.get('child_process_tree_cpu_seconds'))}\t"
                 f"{_metric(result.get('peak_process_tree_rss_bytes'))}\t"

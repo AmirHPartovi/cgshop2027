@@ -16,7 +16,7 @@
         "boustrophedon",
         "frederickson",
         "mstc",
-        "column-gen",
+        "connected-growth",
         "tsp-cov"
       ],
       "per_algorithm_timeout_seconds": 2.0

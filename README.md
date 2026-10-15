@@ -34,7 +34,7 @@ build/bin/solver -i tests/fixtures/instances/tiny-square.instance.json \
   -o build/example.solution.json --config config/default.json \
   --algorithm hybrid --algorithm-timeout 10 --kont-timeout 2 \
   --seed 2027 --lns-iterations 250 --portfolio \
-  boustrophedon,stc,frederickson,mstc,region-partition,ilp,column-gen,tsp-cov
+  boustrophedon,stc,frederickson,mstc,region-partition,ilp,connected-growth,tsp-cov
 ```
 
 Each solver output has a sibling `<solution>.config.json` containing requested
@@ -77,8 +77,9 @@ cutter assignments, reconstruct each closed route, and accept only candidates
 that pass the internal full-coverage and route validator and improve makespan.
 They preserve the input incumbent and record evaluated candidates, accepted
 moves, improvement, runtime, and termination reason. Official eligibility is
-still established separately by the official checker. The seed controls LNS
-and is varied across repetitions for `lns` and `hybrid`. `heuristic_portfolio`
+still established separately by the official checker. The seed controls
+randomized local search and LNS moves and is varied across repetitions for
+`local`, `lns`, and `hybrid`. `heuristic_portfolio`
 selects the candidate algorithms evaluated by `hybrid`. The IP-KONT setting is named
 `ip_kont_surrogate`, not “exact”: it optimizes a strip-assignment surrogate,
 not the original closed-tour routing objective. `exact_solver_max_candidates`
@@ -101,7 +102,7 @@ Important configuration values in `config/default.json` are:
 | `memory_limit_mib` | `2048` | Per-process or sampled process-tree memory limit |
 | `random_seed` | `2027` | Deterministic heuristic seed |
 | `algorithms` | `["hybrid"]` | Selected algorithm(s) for the batch runner |
-| `randomized_repetitions` | `1` | 1–1000 repeats for LNS/hybrid; deterministic algorithms run once |
+| `randomized_repetitions` | `1` | 1–1000 repeats for local/LNS/hybrid; deterministic algorithms run once |
 | `output_directory` | `"build/results"` | Default batch output directory |
 | `overwrite_existing` | `false` | Refuse existing outputs unless explicitly enabled |
 | `logging_verbosity` | `"info"` | `debug`, `info`, `warning`, or `error` |
@@ -217,10 +218,12 @@ changes that status.
 Algorithms are `strip`, `partition`, `local`, `anchor-cover`,
 `balanced-greedy`, `boustrophedon` (A1), `stc` (A2), `tsp-cov` (A3),
 `frederickson` (B1), `mstc` (B2), `region-partition` (B3), `ilp` (legacy
-name for the KONT column-assignment surrogate),
-`column-gen` (C2), `lns` (D1), and `hybrid` (E). `anchor-cover` prioritizes cutter placements by uncovered
-area, while `balanced-greedy` builds routes concurrently to avoid an overloaded
-cutter. The input and output use the
+name for the KONT column-assignment surrogate), `connected-growth` (formerly
+`column-gen`, C2), `lns` (D1), and `hybrid` (E). `column-gen`, `c2`, and `bap`
+remain accepted legacy aliases; they run the same connected-growth heuristic
+and do not imply column generation. `anchor-cover` prioritizes cutter
+placements by uncovered area, while `balanced-greedy` builds routes
+concurrently to avoid an overloaded cutter. The input and output use the
 official CG:SHOP 2027 JSON field names (`region_to_cover`, `cutter_center`,
 `number_of_cutters`, and implicit closed tours).
 Instance boundaries are implicitly closed, must be simple orthogonal rings,
@@ -229,6 +232,20 @@ format identifiers, matching UIDs, cutter count, closed rectilinear tours,
 and full swept-region coverage before they are written. The objective is the
 maximum closed-tour Manhattan length, including each last-to-first edge; all
 Python reporting scripts share `scripts/solution_metrics.py`.
+
+### Algorithm guarantees
+
+No registered method currently has a proved approximation guarantee for the
+original closed-tour makespan objective. `ilp` optimizes a vertical-column
+assignment surrogate and is not exact for that objective. No current command
+reports a proof-grade route-length lower bound or a certified optimum.
+
+| Algorithm | Classification for the original objective |
+|---|---|
+| `strip`, `partition`, `anchor-cover` (`anchor`), `balanced-greedy` (`greedy`), `boustrophedon` (`a1`, `zigzag`), `stc` (`a2`), `tsp-cov` (`tsp_cov`, `a3`), `frederickson` (`b1`), `mstc` (`b2`), `region-partition` (`b3`), `connected-growth` (`column-gen`, `c2`, `bap`) | Heuristic solution constructors; no formal approximation guarantee |
+| `local`, `lns` (`d1`) | Heuristic local-search / large-neighborhood improvement methods; no formal approximation guarantee |
+| `ilp` (`c1`) | Heuristic candidate constructor driven by a surrogate optimization model; no original-objective exactness or approximation guarantee |
+| `hybrid` (`e`) | Sequential heuristic portfolio; no formal approximation guarantee |
 
 ## IP-KONT exactness and reference semantics
 
@@ -362,9 +379,79 @@ To benchmark the configured algorithm list concurrently:
 
 The benchmark requires at least one `*.instance.json` input and a runnable
 solver. It refuses existing output unless `overwrite_existing` is enabled (or
-`--overwrite` is passed), records requested/effective settings and each
-per-run configuration, enforces process-tree time/memory limits, and exits
-nonzero if any run fails.
+`--overwrite` is passed), validates every selected instance before the batch,
+records requested/effective settings and each trial's input, source, executable,
+configuration, and seed fingerprints, persists per-trial logs and resource
+measurements, and exits nonzero if any run fails. The trial table distinguishes
+feasibility from optimality and preserves timeout-with-incumbent outcomes.
+
+Run one isolated algorithm, all registered algorithms on one instance, a
+selected matrix, randomized repetitions, or the separate auto-policy
+experiment:
+
+```sh
+python3 scripts/benchmark.py --instance INSTANCE.instance.json \
+  --algorithm partition --output build/benchmarks/partition
+python3 scripts/benchmark.py --instance INSTANCE.instance.json \
+  --all-algorithms --output build/benchmarks/all
+python3 scripts/benchmark.py --instances data/test --instance-ids uid-a,uid-b \
+  --algorithms partition,lns --repetitions 5 --jobs 1 \
+  --output build/benchmarks/selected
+python3 scripts/benchmark.py --instances data/test --auto-policy \
+  --official --output build/benchmarks/auto-policy
+```
+
+`--algorithm` and `--algorithms` accept registered IDs and aliases, but
+`benchmark.tsv` stores canonical registry IDs. Each `instance × algorithm ×
+repetition × seed` trial launches a fresh solver process; `auto-policy` is
+recorded separately and never substitutes for standalone algorithm trials.
+Output contains `benchmark.tsv`, reference comparisons, the effective runtime
+configuration, each solution and its solver-side configuration reports, and
+separate stdout/stderr logs. Missing measurements and proof references remain
+`null`. The official Python verifier is required by `--official` and the
+auto-policy experiment.
+
+### Benchmark quality and resource reports
+
+Every benchmark run also produces machine-readable `benchmark.csv` and
+`benchmark.jsonl` copies of the raw trial table, `report-metadata.json`,
+`benchmark-summary.md`, a best-valid-makespan instance × algorithm matrix,
+separate quality, runtime, and memory rankings, deterministic/randomized/policy
+summaries, per-instance and per-algorithm Markdown reports, and LIGHT/MEDIUM/
+HEAVY/UNKNOWN tier reports. SVG plots show quality versus wall time and sampled
+process-tree memory, runtime distributions and timeout counts, and scalability
+by estimated anchor count when that feature is recorded. An optimality-gap plot
+is emitted only for explicitly certified optima or validated lower bounds with
+source/proof metadata.
+
+Quality ranking is lexicographic: feasible-solution rate, geometric mean of
+per-instance best-run ratios to the experiment's best validated feasible
+makespan, then median valid makespan. Invalid solutions are excluded; timed-out
+trials with a validated incumbent remain quality-eligible and still count as
+timeouts. For each algorithm, repeated runs are reduced to that algorithm's
+best valid result per instance for its per-instance quality ratios, so extra
+repetitions do not overweight an instance. Runtime, CPU, memory, timeouts, and
+feasible-solution rates use all attempted trials; metric denominators and
+missing-measurement handling are recorded in `report-metadata.json`. The
+experiment-relative best feasible value is never called an optimum. Certified
+optimum comparisons and proof-grade lower-bound gaps are separate fields.
+Runtime and memory rankings are not combined into a composite score.
+They rank only algorithms with valid solutions by resource use among their
+valid trials; all-attempt resource medians, failure counts, and timeout rates
+remain visible beside those ranks, so fast invalid exits cannot lead the
+resource ranking.
+
+Reports can be regenerated from the raw table without rerunning solvers:
+
+```sh
+python3 scripts/summarize_benchmark.py \
+  --input build/benchmarks/selected/benchmark.tsv --overwrite
+```
+
+The report generator refuses to overwrite existing artifacts unless
+`--overwrite` is explicit. `quality-vs-instance-size.svg` and
+`runtime-vs-instance-size.svg` use the classifier's estimated anchor count as
+an input-size proxy, not as an objective or formal runtime guarantee.
 
 To run every built-in algorithm on every instance, validate each generated
 solution, create one PNG figure per instance/algorithm pair, and write both a
@@ -377,8 +464,21 @@ python3 scripts/solve_all.py --instances data/test --timeout 10 \
 
 The output contains `all-results.tsv` (one row per run),
 `all-results`'s `master-table.tsv` (instances as rows and algorithms as columns,
-with makespans or a per-run limit/failure status), and
-`<instance>.<algorithm>.png` figures. Each instance/algorithm run is hard
+with makespans or a per-run limit/failure status), and matching PNG/SVG
+snapshots named with instance UID, canonical algorithm ID, repetition, and seed.
+The snapshots distinguish target cells, actual swept coverage, overlaps,
+uncovered cells, cutter geometry, and closed center trajectories; SVG titles
+include validation status, per-tour lengths, and makespan. To render a single
+solution as an optional animated SVG, run:
+
+```sh
+python3 scripts/visualize.py INSTANCE.json SOLUTION.json --output route.svg \
+  --algorithm-id partition --status OFFICIAL_VALID --animate
+```
+
+Visualization uses the solver's integer-cell sweep semantics, but its coverage
+report is not a substitute for the official solution checker. Each
+instance/algorithm run is hard
 limited independently by time and memory; use `--memory` to change the
 default 2048 MiB cap or `--master-table` to choose another table path. Add
 `--official` to run the official validator in addition to the solver's
@@ -413,6 +513,7 @@ CGSHOP_LOG_LEVEL=debug build/bin/solver \
 For result analysis, `scripts/analyze_results.py` writes a TSV containing every
 available solution artifact and its makespan. `scripts/ilp_coverage.py` invokes
 `gurobi_cl` for a bounded cutter-placement set-cover relaxation; its selected
-anchors are a lower-bound study and do not claim an optimal closed-tour route.
+anchors are a placement-count study and do not provide a route-length lower
+bound or claim an optimal closed-tour route.
 See [docs/ilp-analysis.md](docs/ilp-analysis.md) for the report definitions and
 the distinction between the ILP relaxation and the original routing objective.

@@ -307,7 +307,8 @@ void RuntimeConfig::validate() const {
         "strip", "partition", "local", "anchor-cover", "anchor",
         "balanced-greedy", "greedy", "boustrophedon", "a1", "zigzag",
         "stc", "a2", "tsp-cov", "tsp_cov", "a3", "frederickson", "b1",
-        "mstc", "b2", "region-partition", "b3", "ilp", "c1", "column-gen",
+        "mstc", "b2", "region-partition", "b3", "ilp", "c1",
+        "connected-growth", "column-gen",
         "c2", "bap", "lns", "d1", "hybrid", "e"};
     if (algorithms.empty()) throw std::runtime_error("algorithms must not be empty");
     if (std::set<std::string>(algorithms.begin(), algorithms.end()).size() !=
@@ -337,7 +338,7 @@ void RuntimeConfig::validate() const {
     }
     static const std::set<std::string> portfolioNames{
         "boustrophedon", "stc", "frederickson", "mstc", "region-partition",
-        "ilp", "column-gen", "tsp-cov"};
+        "ilp", "connected-growth", "column-gen", "tsp-cov"};
     if (heuristicPortfolio.empty()) {
         throw std::runtime_error("heuristic_portfolio must not be empty");
     }
@@ -356,10 +357,11 @@ void RuntimeConfig::validate() const {
     }
     if (randomizedRepetitions > 1 &&
         std::none_of(algorithms.begin(), algorithms.end(), [](const std::string& name) {
-            return name == "lns" || name == "d1" || name == "hybrid" || name == "e";
+            return name == "local" || name == "lns" || name == "d1" ||
+                   name == "hybrid" || name == "e";
         })) {
         throw std::runtime_error(
-            "randomized_repetitions > 1 requires lns or hybrid in algorithms");
+            "randomized_repetitions > 1 requires local, lns, or hybrid in algorithms");
     }
 }
 

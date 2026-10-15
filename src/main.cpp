@@ -45,6 +45,7 @@ struct Options {
     std::string output;
     std::string configPath;
     bool help{false};
+    bool validateInstanceOnly{false};
     std::vector<std::string> overrides;
 };
 
@@ -70,12 +71,14 @@ const char kUsage[] =
     "      --exact-max-candidates N  skip IP-KONT surrogate above this size (0=unlimited)\n"
     "      --exact-exploratory-budget SEC (unsupported until tier classification)\n"
     "      --portfolio CSV           hybrid portfolio algorithm names\n"
+    "      connected-growth is heuristic; legacy aliases: column-gen, c2, bap\n"
     "      --repetitions N           benchmark repetitions for randomized algorithms\n"
     "      --output-dir DIR          runner output directory\n"
     "      --overwrite               allow existing output/report files\n"
     "      --no-overwrite            refuse existing output/report files\n"
     "      --no-official             disable official checks in batch runners\n"
     "      --log-level LEVEL         debug|info|warning|error\n"
+    "      --validate-instance       validate input only; requires -i INSTANCE\n"
     "      --help                    show this help\n";
 
 std::vector<std::string> csv(const std::string& value) {
@@ -98,6 +101,8 @@ Options parseOptions(int argc, char** argv) {
         const std::string argument(argv[i]);
         if (argument == "--help" || argument == "-h") {
             options.help = true;
+        } else if (argument == "--validate-instance") {
+            options.validateInstanceOnly = true;
         } else if (argument == "--config") {
             if (++i >= argc) throw std::runtime_error("missing --config path");
             options.configPath = argv[i];
@@ -286,6 +291,13 @@ int main(int argc, char** argv) {
             std::cout << kUsage;
             return EXIT_SUCCESS;
         }
+        if (options.validateInstanceOnly) {
+            if (options.input.empty())
+                throw std::runtime_error("--validate-instance requires -i INSTANCE");
+            (void)cgshop2027::InstanceReader::readInstance(options.input);
+            std::cout << "instance valid\n";
+            return 0;
+        }
         auto config = cgshop2027::RuntimeConfig::load(options.configPath);
         applyOverrides(config, options.overrides);
         config.validate();
@@ -372,9 +384,11 @@ int main(int argc, char** argv) {
             algorithm = std::make_unique<cgshop2027::RegionPartitionAssignAlgorithm>(*problem);
         } else if (algorithmName == "ilp" || algorithmName == "c1") {
             algorithm = std::make_unique<cgshop2027::IlpAlgorithm>(*problem);
-        } else if (algorithmName == "column-gen" || algorithmName == "c2" ||
+        } else if (algorithmName == "connected-growth" || algorithmName == "column-gen" ||
+                   algorithmName == "c2" ||
                    algorithmName == "bap") {
-            algorithm = std::make_unique<cgshop2027::ColumnGenerationAlgorithm>(*problem);
+            algorithm = std::make_unique<cgshop2027::ConnectedGrowthAlgorithm>(
+                *problem, algorithmName);
         } else if (algorithmName == "lns" || algorithmName == "d1") {
             algorithm = std::make_unique<cgshop2027::LnsMultiCutterAlgorithm>(*problem);
         } else if (algorithmName == "hybrid" || algorithmName == "e") {

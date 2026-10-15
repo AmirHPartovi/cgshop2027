@@ -73,8 +73,10 @@ Solution HybridSolver::solve(double timeoutSeconds) {
         attempt([&] { return RegionPartitionAssignAlgorithm(problem_).solve(remaining()); });
     if (selected("ilp"))
         attempt([&] { return IlpAlgorithm(problem_).solve(remaining()); });
-    if (selected("column-gen"))
-        attempt([&] { return ColumnGenerationAlgorithm(problem_).solve(remaining()); });
+    if (selected("connected-growth") || selected("column-gen"))
+        attempt([&] {
+            return ConnectedGrowthAlgorithm(problem_, "hybrid").solve(remaining());
+        });
     if (selected("tsp-cov"))
         attempt([&] {
             const auto anchors = TourConstruction::coveringAnchors(problem_);
@@ -121,18 +123,6 @@ Solution HybridSolver::solve(double timeoutSeconds) {
     best.meta["portfolio_selected_algorithm"] = selectedAlgorithm;
     best.meta["constructive_makespan"] = std::to_string(bestSpan);
     if (cancellationObserved || ExecutionControl::instance().cancelled()) {
-        best.meta["execution_status"] = "TIME_LIMIT_WITH_FEASIBLE_CANDIDATE";
-        best.meta["candidate_source"] = "hybrid_validated_incumbent";
-        return best;
-    }
-    try {
-        best.meta["area_lower_bound"] =
-            std::to_string(TourConstruction::areaLowerBound(problem_));
-    } catch (const ExecutionCancelled&) {
-        best.meta["lns_candidates_evaluated"] = "0";
-        best.meta["lns_moves_accepted"] = "0";
-        best.meta["lns_improved"] = "false";
-        best.meta["lns_termination_reason"] = "cancelled_before_search";
         best.meta["execution_status"] = "TIME_LIMIT_WITH_FEASIBLE_CANDIDATE";
         best.meta["candidate_source"] = "hybrid_validated_incumbent";
         return best;

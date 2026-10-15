@@ -24,7 +24,7 @@ class SolverPolicyTests(unittest.TestCase):
             "LIGHT": ["partition", "boustrophedon", "tsp-cov"],
             "MEDIUM": [
                 "partition", "boustrophedon", "frederickson",
-                "mstc", "column-gen", "tsp-cov",
+                "mstc", "connected-growth", "tsp-cov",
             ],
             "HEAVY": ["partition", "boustrophedon", "stc", "mstc"],
         }

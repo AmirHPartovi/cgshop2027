@@ -26,7 +26,7 @@
     "mstc",
     "region-partition",
     "ilp",
-    "column-gen",
+    "connected-growth",
     "tsp-cov"
   ],
   "randomized_repetitions": 1,

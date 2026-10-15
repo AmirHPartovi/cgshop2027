@@ -13,6 +13,7 @@
 #include <numeric>
 #include <queue>
 #include <random>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -601,11 +602,12 @@ std::vector<std::vector<Point>> TourConstruction::stripIlpTours(
     return groups;
 }
 
-std::vector<std::vector<Point>> TourConstruction::columnGenerationTours(
+ConnectedGrowthResult TourConstruction::connectedGrowthTours(
     const std::vector<Point>& anchors, int k,
     const std::chrono::steady_clock::time_point& start, double limit) {
     const int cutters = std::max(k, 1);
-    if (anchors.empty()) return std::vector<std::vector<Point>>(static_cast<size_t>(cutters));
+    if (anchors.empty())
+        return {std::vector<std::vector<Point>>(static_cast<size_t>(cutters)), false, 0};
     const auto treeTours = mstc(anchors, cutters);
     const auto splitTours = splitFrederickson(boustrophedon(anchors), cutters);
     auto lengthOf = [](const std::vector<std::vector<Point>>& groups) {
@@ -613,76 +615,78 @@ std::vector<std::vector<Point>> TourConstruction::columnGenerationTours(
         for (const auto& group : groups) result = std::max(result, closedLength(group));
         return result;
     };
-    int lo = std::max(1, static_cast<int>(anchors.size() + static_cast<size_t>(cutters) - 1U) /
-                             cutters);
-    int hi = std::max(lengthOf(splitTours), lengthOf(treeTours));
+    std::vector<std::vector<Point>> bestTours =
+        lengthOf(splitTours) <= lengthOf(treeTours) ? splitTours : treeTours;
+    int lo = 0;
+    int hi = static_cast<int>(std::min<int64_t>(
+        std::max(lengthOf(splitTours), lengthOf(treeTours)),
+        std::numeric_limits<int>::max()));
     const auto index = indexMap(anchors);
-    auto growOnce = [&](int budget, std::unordered_set<Point, PointHash>& uncovered) {
-        std::vector<Point> grown;
-        if (uncovered.empty()) return grown;
-        const Point seed = *uncovered.begin();
-        std::queue<Point> queue;
-        std::unordered_set<Point, PointHash> seen;
-        queue.push(seed);
-        seen.insert(seed);
-        while (!queue.empty() && !timedOut(start, limit)) {
-            ExecutionControl::instance().checkpoint();
-            const Point u = queue.front();
-            queue.pop();
-            grown.push_back(u);
-            if (closedLength(boustrophedon(grown)) > budget) {
-                grown.pop_back();
-                break;
-            }
-            for (const Point delta : kNeighbor) {
-                const Point next = u + delta;
-                if (uncovered.count(next) == 0U || seen.count(next) != 0U) continue;
-                if (index.count(next) == 0U) continue;
-                seen.insert(next);
-                queue.push(next);
-            }
-        }
-        if (grown.empty()) grown.push_back(seed);
-        return grown;
-    };
-    auto feasible = [&](int budget) {
+    enum class Feasibility { feasible, infeasible, unknown };
+    auto feasibleTours = [&](int budget,
+                             std::vector<std::vector<Point>>& tours) -> Feasibility {
         std::unordered_set<Point, PointHash> uncovered(anchors.begin(), anchors.end());
-        int used = 0;
-        while (!uncovered.empty()) {
+        tours.assign(static_cast<size_t>(cutters), {});
+        for (int used = 0; !uncovered.empty() && used < cutters; ++used) {
             ExecutionControl::instance().checkpoint();
-            if (used >= cutters) return false;
-            if (timedOut(start, limit)) return true;
-            const auto grown = growOnce(budget, uncovered);
+            if (timedOut(start, limit)) return Feasibility::unknown;
+            const Point seed = *std::min_element(
+                uncovered.begin(), uncovered.end(),
+                [](const Point& a, const Point& b) {
+                    return std::tie(a.x, a.y) < std::tie(b.x, b.y);
+                });
+            std::vector<Point> grown;
+            std::queue<Point> queue;
+            std::unordered_set<Point, PointHash> seen;
+            queue.push(seed);
+            seen.insert(seed);
+            while (!queue.empty()) {
+                ExecutionControl::instance().checkpoint();
+                if (timedOut(start, limit)) return Feasibility::unknown;
+                const Point current = queue.front();
+                queue.pop();
+                grown.push_back(current);
+                if (closedLength(boustrophedon(grown)) > budget) {
+                    grown.pop_back();
+                    break;
+                }
+                for (const Point delta : kNeighbor) {
+                    const Point next = current + delta;
+                    if (uncovered.count(next) == 0U || seen.count(next) != 0U ||
+                        index.count(next) == 0U)
+                        continue;
+                    seen.insert(next);
+                    queue.push(next);
+                }
+            }
+            if (grown.empty()) grown.push_back(seed);
             for (const Point point : grown) uncovered.erase(point);
-            ++used;
+            tours[static_cast<size_t>(used)] = boustrophedon(grown);
         }
-        return true;
+        return uncovered.empty() ? Feasibility::feasible : Feasibility::infeasible;
     };
+    bool didTimeout = false;
+    int budgetChecks = 0;
     while (lo < hi && !timedOut(start, limit)) {
-        const int mid = lo + (hi - lo) / 2;
-        if (feasible(mid))
-            hi = mid;
-        else
-            lo = mid + 1;
-    }
-    std::unordered_set<Point, PointHash> uncovered(anchors.begin(), anchors.end());
-    std::vector<std::vector<Point>> groups(static_cast<size_t>(cutters));
-    for (int i = 0; i < cutters && !uncovered.empty(); ++i) {
         ExecutionControl::instance().checkpoint();
-        const auto grown = growOnce(hi, uncovered);
-        for (const Point point : grown) uncovered.erase(point);
-        groups[static_cast<size_t>(i)] = boustrophedon(grown);
+        const int mid = lo + (hi - lo) / 2;
+        std::vector<std::vector<Point>> candidate;
+        ++budgetChecks;
+        const Feasibility status = feasibleTours(mid, candidate);
+        if (status == Feasibility::unknown) {
+            didTimeout = true;
+            break;
+        }
+        if (status == Feasibility::feasible) {
+            if (lengthOf(candidate) < lengthOf(bestTours))
+                bestTours = std::move(candidate);
+            hi = mid;
+        } else {
+            lo = mid + 1;
+        }
     }
-    if (!uncovered.empty()) {
-        std::vector<Point> leftover(uncovered.begin(), uncovered.end());
-        groups.back().insert(groups.back().end(), leftover.begin(), leftover.end());
-        groups.back() = boustrophedon(groups.back());
-    }
-    const int grownLength = lengthOf(groups);
-    if (lengthOf(splitTours) < grownLength && lengthOf(splitTours) <= lengthOf(treeTours))
-        return splitTours;
-    if (lengthOf(treeTours) < grownLength) return treeTours;
-    return groups;
+    if (!didTimeout && timedOut(start, limit)) didTimeout = true;
+    return {std::move(bestTours), didTimeout, budgetChecks};
 }
 
 Solution TourConstruction::improveLns(const Problem& problem, Solution solution,
@@ -935,13 +939,6 @@ bool TourConstruction::timedOut(const std::chrono::steady_clock::time_point& sta
     return limit >= 0 && std::chrono::duration<double>(
                              std::chrono::steady_clock::now() - start)
                                  .count() >= limit;
-}
-
-int TourConstruction::areaLowerBound(const Problem& problem) {
-    const int cells = static_cast<int>(problem.regionCells().size());
-    const int cutter = std::max(1, static_cast<int>(problem.cutterCells().size()));
-    const int k = std::max(1, problem.numberOfCutters);
-    return (cells + k * cutter - 1) / (k * cutter);
 }
 
 }  // namespace cgshop2027

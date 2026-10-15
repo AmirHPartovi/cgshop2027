@@ -6,154 +6,18 @@ from __future__ import annotations
 import argparse
 import copy
 import json
-import math
 import os
 import signal
-import struct
 import subprocess
 import sys
 import tempfile
 import time
-import zlib
 from pathlib import Path
 
 from benchmark import process_tree_snapshot
-from runtime_config import ROOT, load_runtime_config
+from runtime_config import CANONICAL_ALGORITHMS, ROOT, load_runtime_config
 from solution_metrics import makespan
-
-
-ALGORITHMS = (
-    "strip",
-    "partition",
-    "local",
-    "anchor-cover",
-    "balanced-greedy",
-    "boustrophedon",
-    "stc",
-    "tsp-cov",
-    "frederickson",
-    "mstc",
-    "region-partition",
-    "ilp",
-    "column-gen",
-    "lns",
-    "hybrid",
-)
-
-
-def points(item: dict) -> list[tuple[int, int]]:
-    return list(zip(item.get("x", []), item.get("y", [])))
-
-
-def inside(x: float, y: float, polygon: list[tuple[int, int]]) -> bool:
-    result = False
-    for index, first in enumerate(polygon):
-        second = polygon[index - 1]
-        if (first[1] > y) != (second[1] > y):
-            crossing = (second[0] - first[0]) * (y - first[1]) / (
-                second[1] - first[1]
-            ) + first[0]
-            if x < crossing:
-                result = not result
-    return result
-
-
-def set_pixel(image: bytearray, width: int, height: int, x: int, y: int,
-              color: tuple[int, int, int]) -> None:
-    if 0 <= x < width and 0 <= y < height:
-        offset = (y * width + x) * 3
-        image[offset : offset + 3] = bytes(color)
-
-
-def line(image: bytearray, width: int, height: int, start: tuple[int, int],
-         end: tuple[int, int], color: tuple[int, int, int]) -> None:
-    x0, y0 = start
-    x1, y1 = end
-    dx = abs(x1 - x0)
-    sx = 1 if x0 < x1 else -1
-    dy = -abs(y1 - y0)
-    sy = 1 if y0 < y1 else -1
-    error = dx + dy
-    while True:
-        set_pixel(image, width, height, x0, y0, color)
-        if (x0, y0) == (x1, y1):
-            return
-        twice = 2 * error
-        if twice >= dy:
-            error += dy
-            x0 += sx
-        if twice <= dx:
-            error += dx
-            y0 += sy
-
-
-def write_png(path: Path, width: int, height: int, pixels: bytearray) -> None:
-    def chunk(kind: bytes, data: bytes) -> bytes:
-        return (
-            struct.pack(">I", len(data))
-            + kind
-            + data
-            + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
-        )
-
-    raw = b"".join(
-        b"\x00" + bytes(pixels[row * width * 3 : (row + 1) * width * 3])
-        for row in range(height)
-    )
-    path.write_bytes(
-        b"\x89PNG\r\n\x1a\n"
-        + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
-        + chunk(b"IDAT", zlib.compress(raw, 6))
-        + chunk(b"IEND", b"")
-    )
-
-
-def render_png(instance: dict, solution: dict, output: Path) -> None:
-    region = instance["region_to_cover"]
-    polygons = [points(region["outer_boundary"])] + [
-        points(hole) for hole in region.get("inner_boundaries", [])
-    ]
-    tours = [points(tour) for tour in solution.get("tours", [])]
-    all_points = [point for polygon in polygons for point in polygon]
-    all_points.extend(point for tour in tours for point in tour)
-    min_x = min(point[0] for point in all_points)
-    max_x = max(point[0] for point in all_points)
-    min_y = min(point[1] for point in all_points)
-    max_y = max(point[1] for point in all_points)
-    span_x = max(max_x - min_x, 1)
-    span_y = max(max_y - min_y, 1)
-    scale = min(360 / span_x, 260 / span_y)
-    width = max(120, min(360, math.ceil((max_x - min_x + 4) * scale)))
-    height = max(90, min(260, math.ceil((max_y - min_y + 4) * scale)))
-
-    def transform(point: tuple[int, int]) -> tuple[int, int]:
-        return (
-            round((point[0] - min_x + 2) * scale),
-            round((max_y - point[1] + 2) * scale),
-        )
-
-    pixels = bytearray((248, 249, 247) * (width * height))
-    outer = polygons[0]
-    holes = polygons[1:]
-    for py in range(height):
-        for px in range(width):
-            x = min_x - 2 + (px + 0.5) / scale
-            y = max_y + 2 - (py + 0.5) / scale
-            if inside(x, y, outer) and not any(inside(x, y, hole) for hole in holes):
-                set_pixel(pixels, width, height, px, py, (217, 226, 236))
-
-    colors = (
-        (228, 26, 28), (55, 126, 184), (77, 175, 74), (152, 78, 163),
-        (255, 127, 0), (166, 86, 40), (247, 129, 191), (80, 80, 80),
-    )
-    for index, tour in enumerate(tours):
-        if not tour:
-            continue
-        color = colors[index % len(colors)]
-        path = [transform(point) for point in tour]
-        for start, end in zip(path, path[1:] + path[:1]):
-            line(pixels, width, height, start, end, color)
-    write_png(output, width, height, pixels)
+from visualize_solution import render_png, render_svg, safe_filename_component
 
 
 def official_validator_available() -> bool:
@@ -333,7 +197,7 @@ def main() -> int:
     elif not args.output.is_absolute():
         args.output = root / args.output
     args.overwrite = effective["overwrite_existing"]
-    unknown = sorted(set(algorithms) - set(ALGORITHMS))
+    unknown = sorted(set(algorithms) - set(CANONICAL_ALGORITHMS))
     if unknown:
         parser.error("unknown algorithms: " + ", ".join(unknown))
     if args.timeout <= 0:
@@ -402,10 +266,16 @@ def main() -> int:
     # independently bounded.
     for algorithm in algorithms:
         for instance_path in instances:
-            uid = instance_path.name.removesuffix(".instance.json")
             instance = json.loads(instance_path.read_text())
-            solution_path = args.output / f"{uid}.{algorithm}.solution.json"
-            figure_path = args.output / f"{uid}.{algorithm}.png"
+            uid = instance["instance_uid"]
+            trial_stem = (
+                f"{safe_filename_component(uid)}."
+                f"{safe_filename_component(algorithm)}.rep-0000."
+                f"seed-{effective['random_seed']}"
+            )
+            solution_path = args.output / f"{trial_stem}.solution.json"
+            figure_path = args.output / f"{trial_stem}.png"
+            figure_svg_path = args.output / f"{trial_stem}.svg"
             run_config_path = Path(str(solution_path) + ".run-config.json")
             started = time.monotonic()
             row = {
@@ -418,6 +288,8 @@ def main() -> int:
                 "seconds": "",
                 "solution": str(solution_path),
                 "figure": str(figure_path),
+                "figure_svg": str(figure_svg_path),
+                "visualization_error": "",
                 "config_report": str(run_config_path),
                 "time_limit_seconds": str(args.timeout),
                 "memory_limit_mib": str(args.memory),
@@ -496,6 +368,7 @@ def main() -> int:
                 if args.overwrite:
                     solution_path.unlink(missing_ok=True)
                     figure_path.unlink(missing_ok=True)
+                    figure_svg_path.unlink(missing_ok=True)
                 completed, limit_error, solver_metrics = run_bounded(
                     [str(args.solver), "-i", str(instance_path), "-o",
                      str(solution_path), "-a", algorithm,
@@ -547,7 +420,6 @@ def main() -> int:
                                        f"solver exited with {completed.returncode}")
                 solution = json.loads(solution_path.read_text())
                 row["makespan"] = str(makespan(solution))
-                render_png(instance, solution, figure_path)
                 if use_official:
                     validation_timeout = args.official_timeout
                     if global_deadline is not None:
@@ -578,11 +450,37 @@ def main() -> int:
                     if official.returncode != 0:
                         row["status"] = "official_invalid"
                         row["error"] = official.stdout.strip()
+                        try:
+                            render_png(
+                                instance, solution, figure_path, row["status"], algorithm
+                            )
+                            figure_svg_path.write_text(
+                                render_svg(
+                                    instance, solution, algorithm, row["status"]
+                                ),
+                                encoding="utf-8",
+                            )
+                        except (OSError, ValueError, KeyError, TypeError) as error:
+                            row["visualization_error"] = str(error)
                         raise RuntimeError(
                             row["error"] or "official validator rejected solution"
                         )
                 row["status"] = "ok"
                 row["valid"] = "true"
+                validation_label = (
+                    "OFFICIAL_VALID"
+                    if use_official else "VALID_FEASIBLE; OFFICIAL_CHECKER_DISABLED"
+                )
+                try:
+                    render_png(
+                        instance, solution, figure_path, validation_label, algorithm
+                    )
+                    figure_svg_path.write_text(
+                        render_svg(instance, solution, algorithm, validation_label),
+                        encoding="utf-8",
+                    )
+                except (OSError, ValueError, KeyError, TypeError) as error:
+                    row["visualization_error"] = str(error)
             except subprocess.TimeoutExpired as error:
                 row["status"] = "time_limit"
                 row["error"] = f"exceeded {args.timeout:g}s"
@@ -605,7 +503,8 @@ def main() -> int:
               "official_process_tree_rss_sample_count",
               "official_process_tree_cpu_sample_count",
               "official_termination_reason",
-              "solution", "figure", "config_report", "error")
+              "solution", "figure", "figure_svg", "visualization_error",
+              "config_report", "error")
     detailed = args.output / "all-results.tsv"
     detailed.write_text(
         "\t".join(fields) + "\n"

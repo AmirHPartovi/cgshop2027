@@ -12,15 +12,39 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG_PATH = ROOT / "config/default.json"
-ALGORITHMS = {
+ALGORITHM_ALIASES = {
+    "anchor": "anchor-cover",
+    "greedy": "balanced-greedy",
+    "a1": "boustrophedon",
+    "zigzag": "boustrophedon",
+    "a2": "stc",
+    "tsp_cov": "tsp-cov",
+    "a3": "tsp-cov",
+    "b1": "frederickson",
+    "b2": "mstc",
+    "b3": "region-partition",
+    "c1": "ilp",
+    "column-gen": "connected-growth",
+    "c2": "connected-growth",
+    "bap": "connected-growth",
+    "d1": "lns",
+    "e": "hybrid",
+}
+CANONICAL_ALGORITHMS = (
     "strip", "partition", "local", "anchor-cover", "balanced-greedy",
     "boustrophedon", "stc", "tsp-cov", "frederickson", "mstc",
-    "region-partition", "ilp", "column-gen", "lns", "hybrid",
-}
+    "region-partition", "ilp", "connected-growth", "lns", "hybrid",
+)
+ALGORITHMS = set(CANONICAL_ALGORITHMS) | set(ALGORITHM_ALIASES)
 PORTFOLIO_ALGORITHMS = {
     "boustrophedon", "stc", "frederickson", "mstc", "region-partition",
-    "ilp", "column-gen", "tsp-cov",
+    "ilp", "connected-growth", "column-gen", "c2", "bap", "tsp-cov",
 }
+RANDOMIZED_ALGORITHMS = {"local", "lns", "hybrid"}
+
+
+def canonical_algorithm_id(name: str) -> str:
+    return ALGORITHM_ALIASES.get(name, name)
 CONFIG_KEYS = {
     "global_run_deadline_seconds", "per_instance_timeout_seconds",
     "per_algorithm_timeout_seconds", "ip_kont_timeout_seconds",
@@ -173,9 +197,11 @@ def load_runtime_config(
     if not isinstance(requested["randomized_repetitions"], int):
         raise ValueError("randomized_repetitions must be an integer")
     if requested["randomized_repetitions"] > 1 and not any(
-        name in {"lns", "hybrid"} for name in algorithms
+        canonical_algorithm_id(name) in RANDOMIZED_ALGORITHMS for name in algorithms
     ):
-        raise ValueError("repetitions > 1 requires randomized algorithm lns or hybrid")
+        raise ValueError(
+            "repetitions > 1 requires randomized algorithm local, lns, or hybrid"
+        )
     if not isinstance(requested["output_directory"], str) or not requested["output_directory"]:
         raise ValueError("output_directory must be a nonempty path")
     if requested["logging_verbosity"] not in {"debug", "info", "warning", "error"}:

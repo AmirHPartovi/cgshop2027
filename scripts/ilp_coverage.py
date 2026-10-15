@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
-"""Solve the placement-cover relaxation with Gurobi's command-line solver.
+"""Solve a bounded static placement-cover study with Gurobi.
 
-This is an ILP lower-bound/placement study, not a substitute for the closed-tour
-problem: selected anchors are converted to a deterministic rectilinear route.
-The script is intentionally bounded because the official instances can contain
-millions of cells.
+The selected-placement count is not a proof-grade lower bound on closed-tour
+makespan because routes may cover cells while traversing intermediate centers.
 """
 
 from __future__ import annotations
@@ -119,7 +117,7 @@ def main() -> int:
             line.startswith("x") and line.rstrip().endswith("1")
             for line in sol.read_text().splitlines()
         )
-        print(f"OPTIMAL_OR_BEST_BOUND\tselected_anchors={selected}")
+        print(f"PLACEMENT_OBJECTIVE\tselected_anchors={selected}")
     return 0
 
 

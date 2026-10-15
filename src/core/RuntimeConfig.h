@@ -31,7 +31,7 @@ struct RuntimeConfig {
     double exactSolverExploratoryTimeBudgetSeconds{0.0};
     std::vector<std::string> heuristicPortfolio{
         "boustrophedon", "stc", "frederickson", "mstc",
-        "region-partition", "ilp", "column-gen", "tsp-cov"};
+        "region-partition", "ilp", "connected-growth", "tsp-cov"};
     int randomizedRepetitions{1};
     std::string outputDirectory{"build/results"};
     bool overwriteExisting{false};

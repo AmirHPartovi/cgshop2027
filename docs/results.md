@@ -27,8 +27,14 @@ python3 scripts/solve_all.py --instances data/test --timeout 10 \
   --output build/all-results
 ```
 
-It writes one validated solution and one PNG route figure for every successful
-pair. `all-results.tsv` contains status, validation, makespan, runtime,
+It writes one validated solution and matching PNG/SVG snapshots for every
+successful pair, using instance UID, canonical algorithm ID, repetition, and
+seed in the filenames. The cell overlays distinguish target region, swept
+coverage, uncovered cells, and cutter overlap; the SVG also shows cutter
+geometry, closed center trajectories, per-tour lengths, makespan, and
+validation status. A visualization's coverage check mirrors the solver's
+integer-cell sweep semantics and is not a substitute for official validation.
+`all-results.tsv` contains status, validation, makespan, runtime,
 resource limits, sampled process-tree wall/CPU/RSS measurements, sample counts,
 termination reasons, and artifact paths. RSS and CPU are periodic `ps`
 observations and may miss peaks between samples; they are not exact process
@@ -67,3 +73,31 @@ reports `OPTIMAL` for the surrogate. A timeout without an extracted incumbent is
 `TIME_LIMIT_NO_INCUMBENT`; a solver-reported time limit with a recovered
 candidate is `TIME_LIMIT_WITH_INCUMBENT`. Fallback heuristic results remain
 separate.
+
+## Independent benchmark rankings
+
+`scripts/benchmark.py` also persists raw `benchmark.csv` and
+`benchmark.jsonl` records and emits a locally reproducible report bundle from
+`benchmark.tsv`. The bundle includes the overall summary, quality/runtime/
+memory rankings, instance × algorithm matrix, per-instance and per-algorithm
+reports, tier reports, budget comparisons, and SVG plots. Regenerate the
+reports without invoking a solver with:
+
+```sh
+python3 scripts/summarize_benchmark.py \
+  --input build/benchmarks/selected/benchmark.tsv
+```
+
+Quality ratios use the best validated feasible makespan for that instance
+within the experiment as the default reference; this is a `best_known_feasible`
+value, not an optimum. Certified-optimum and validated-lower-bound gaps are
+included only when explicit proof, validation, objective-match, and source
+metadata are present. Invalid outputs do not contribute a makespan or ratio.
+Validated timeout incumbents remain quality-eligible but count toward timeout
+rates. Per-instance ratios reduce repeated trials to each algorithm's best
+valid run, while reliability and resource metrics use every attempted trial.
+Runtime and memory rankings are separate and order algorithms with valid
+solutions by resource use on valid trials; all-attempt resource metrics and
+failures remain visible. The generated metadata records metric denominators
+and missing-value policy. The report generator refuses existing artifacts
+unless `--overwrite` is supplied.

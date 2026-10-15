@@ -57,6 +57,23 @@ if(Python3_Interpreter_FOUND)
                 ${PROJECT_SOURCE_DIR}/tests/test_benchmark_resources.py
     )
     add_test(
+        NAME benchmark_cli
+        COMMAND ${Python3_EXECUTABLE}
+                ${PROJECT_SOURCE_DIR}/tests/test_benchmark_cli.py
+                $<TARGET_FILE:solver>
+    )
+    add_test(
+        NAME benchmark_reports
+        COMMAND ${Python3_EXECUTABLE}
+                ${PROJECT_SOURCE_DIR}/tests/test_benchmark_reports.py
+    )
+    add_test(
+        NAME visualization
+        COMMAND ${Python3_EXECUTABLE}
+                ${PROJECT_SOURCE_DIR}/tests/test_visualization.py
+                $<TARGET_FILE:internal_solution_check>
+    )
+    add_test(
         NAME auto_solve_cli
         COMMAND ${Python3_EXECUTABLE}
                 ${PROJECT_SOURCE_DIR}/tests/test_auto_solve_cli.py

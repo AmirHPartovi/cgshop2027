@@ -62,6 +62,16 @@ void checkAlgorithm(const std::string& name,
                     solution.meta.count("lns_termination_reason") == 1U,
                 name + " must report its anchor-search metrics");
     }
+    if (name == "connected-growth") {
+        require(solution.meta.count("connected_growth_search_status") == 1U &&
+                    solution.meta.count("connected_growth_budget_checks") == 1U &&
+                    (solution.meta.at("connected_growth_search_status") == "COMPLETED" ||
+                     solution.meta.at("connected_growth_search_status") == "NOT_RUN" ||
+                     solution.meta.at("connected_growth_search_status") ==
+                         "TIMEOUT_UNKNOWN"),
+                "connected-growth must report whether its heuristic budget search "
+                "completed or was interrupted");
+    }
     ++passed;
     std::cout << name << ": passed\n";
 }
@@ -94,6 +104,64 @@ bool anchorCoveredByGroups(
     return false;
 }
 
+bool baselineInside(double x, double y,
+                    const std::vector<cgshop2027::Point>& ring) {
+    bool inside = false;
+    for (size_t i = 0, j = ring.size() - 1U; i < ring.size(); j = i++) {
+        const auto& a = ring[i];
+        const auto& b = ring[j];
+        if (((a.y > y) != (b.y > y)) &&
+            x < ((static_cast<double>(b.x) - a.x) * (y - a.y) /
+                     static_cast<double>(b.y - a.y) +
+                 a.x))
+            inside = !inside;
+    }
+    return inside;
+}
+
+std::unordered_set<cgshop2027::Point, cgshop2027::PointHash> baselineRaster(
+    const std::vector<cgshop2027::Point>& outer,
+    const std::vector<std::vector<cgshop2027::Point>>& holes) {
+    std::unordered_set<cgshop2027::Point, cgshop2027::PointHash> cells;
+    if (outer.empty()) return cells;
+    int minX = outer.front().x;
+    int maxX = minX;
+    int minY = outer.front().y;
+    int maxY = minY;
+    for (const auto point : outer) {
+        minX = std::min(minX, point.x);
+        maxX = std::max(maxX, point.x);
+        minY = std::min(minY, point.y);
+        maxY = std::max(maxY, point.y);
+    }
+    for (int64_t y = minY; y < maxY; ++y) {
+        for (int64_t x = minX; x < maxX; ++x) {
+            const double centerX = static_cast<double>(x) + 0.5;
+            const double centerY = static_cast<double>(y) + 0.5;
+            if (!baselineInside(centerX, centerY, outer)) continue;
+            bool inHole = false;
+            for (const auto& hole : holes) {
+                if (baselineInside(centerX, centerY, hole)) {
+                    inHole = true;
+                    break;
+                }
+            }
+            if (!inHole) {
+                cells.insert({static_cast<int>(x), static_cast<int>(y)});
+            }
+        }
+    }
+    return cells;
+}
+
+void checkRasterDifferential(const cgshop2027::Problem& problem) {
+    require(problem.regionCells() ==
+                baselineRaster(problem.outerBoundary, problem.innerBoundaries),
+            "scanline region raster must match the point-in-polygon baseline");
+    require(problem.cutterCells() == baselineRaster(problem.cutter, {}),
+            "scanline cutter raster must match the point-in-polygon baseline");
+}
+
 }  // namespace
 
 int main() {
@@ -104,7 +172,27 @@ int main() {
             (kFixtures / "instances/tiny-hole-multicutter.instance.json").string());
         const auto relocation = cgshop2027::InstanceReader::readInstance(
             (kFixtures / "instances/phase8-relocation.instance.json").string());
+        const auto staircase = cgshop2027::InstanceReader::readInstance(
+            (kFixtures / "instances/phase8-staircase.instance.json").string());
         size_t passed = 0;
+
+        checkRasterDifferential(*single);
+        checkRasterDifferential(*multi);
+        checkRasterDifferential(*relocation);
+        checkRasterDifferential(*staircase);
+
+        const auto expiredGrowth = cgshop2027::TourConstruction::connectedGrowthTours(
+            cgshop2027::TourConstruction::coveringAnchors(*multi),
+            multi->numberOfCutters,
+            std::chrono::steady_clock::now() - std::chrono::seconds(1), 0.0);
+        const auto expiredGrowthSolution = cgshop2027::TourConstruction::makeSolution(
+            *multi, expiredGrowth.tours);
+        require(expiredGrowth.timedOut &&
+                    expiredGrowth.tours.size() ==
+                        static_cast<size_t>(multi->numberOfCutters) &&
+                    expiredGrowthSolution.validate(*multi),
+                "interrupted connected-growth search must report unknown and retain "
+                "a complete valid baseline candidate");
 
         cgshop2027::Problem twoCutters = *single;
         twoCutters.numberOfCutters = 2;
@@ -380,12 +468,21 @@ int main() {
                 "ilp result has an unsupported comparison status: " + ipStatus);
         ++passed;
         std::cout << "ilp: passed\n";
-        checkAlgorithm("column-gen", *multi,
+        checkAlgorithm("connected-growth", *multi,
                        [&] {
-                           return cgshop2027::ColumnGenerationAlgorithm(*multi)
+                           return cgshop2027::ConnectedGrowthAlgorithm(*multi)
                                .solve(1.0);
                        },
                        passed);
+        const auto legacyGrowth =
+            cgshop2027::ConnectedGrowthAlgorithm(*multi, "column-gen").solve(1.0);
+        require(legacyGrowth.validate(*multi) &&
+                    legacyGrowth.meta.at("requested_algorithm") == "column-gen" &&
+                    (legacyGrowth.meta.at("algorithm_implementation") ==
+                         "connected-growth" ||
+                     legacyGrowth.meta.at("algorithm_implementation") == "partition"),
+                "legacy column-gen alias must retain its requested name and truthful "
+                "implementation metadata");
         checkAlgorithm("lns", *multi,
                        [&] {
                            return cgshop2027::LnsMultiCutterAlgorithm(*multi)

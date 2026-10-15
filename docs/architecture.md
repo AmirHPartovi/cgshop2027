@@ -37,7 +37,7 @@ Algorithm names and aliases are selected in a hard-coded conditional chain in
   local search, anchor cover, balanced greedy, boustrophedon (A1), STC (A2),
   TSP coverage (A3), Frederickson split (B1), MSTC (B2), region partition
   (B3), KONT vertical-column assignment surrogate (`ilp`, legacy C1 alias),
-  column generation (C2), LNS (D1), and
+  connected-growth heuristic (legacy C2 aliases), LNS (D1), and
   hybrid (E).
 - `src/utils/` contains logging (`Logger` / `LogScope`) and a standalone
   `Timer`. The shared algorithm timeout predicate is implemented in

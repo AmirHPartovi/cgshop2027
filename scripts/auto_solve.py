@@ -215,6 +215,8 @@ def main() -> int:
     parser.add_argument("--policy-config", type=Path, default=DEFAULT_POLICY)
     parser.add_argument("--solver", type=Path, default=ROOT / "build/bin/solver")
     parser.add_argument("--validation-timeout", type=float, default=30.0)
+    parser.add_argument("--seed", type=int,
+                        help="override the configured random seed for reproducibility")
     parser.add_argument("--overwrite", action="store_true",
                         help="allow replacing existing solution/report files")
     args = parser.parse_args()
@@ -224,7 +226,8 @@ def main() -> int:
     selection_report_path = Path(str(output) + ".selection.json")
     try:
         runtime_requested, runtime_effective, adjustments = load_runtime_config(
-            args.config
+            args.config,
+            {"random_seed": args.seed} if args.seed is not None else None,
         )
     except (OSError, ValueError) as error:
         parser.error(str(error))

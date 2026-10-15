@@ -9,6 +9,12 @@
 
 namespace cgshop2027 {
 
+struct ConnectedGrowthResult {
+    std::vector<std::vector<Point>> tours;
+    bool timedOut{false};
+    int budgetChecks{0};
+};
+
 class TourConstruction {
 public:
     static std::vector<Point> coveringAnchors(const Problem& problem);
@@ -27,7 +33,7 @@ public:
         const std::vector<Point>& anchors, int k);
     static std::vector<std::vector<Point>> stripIlpTours(
         const std::vector<Point>& anchors, int k);
-    static std::vector<std::vector<Point>> columnGenerationTours(
+    static ConnectedGrowthResult connectedGrowthTours(
         const std::vector<Point>& anchors, int k,
         const std::chrono::steady_clock::time_point& start, double limit);
     static Solution improveLns(const Problem& problem, Solution solution,
@@ -40,7 +46,6 @@ public:
     static int64_t closedLength(const std::vector<Point>& points);
     static bool timedOut(const std::chrono::steady_clock::time_point& start,
                          double limit);
-    static int areaLowerBound(const Problem& problem);
     static std::vector<Point> rectilinearConnect(Point from, Point to);
 };
 

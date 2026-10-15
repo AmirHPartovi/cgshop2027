@@ -279,22 +279,92 @@ std::unordered_set<Point, PointHash> raster(
         minY = std::min(minY, point.y);
         maxY = std::max(maxY, point.y);
     }
-    uint64_t scanned = 0;
+
+    struct ScanEvent {
+        int64_t y;
+        int x;
+        bool entering;
+    };
+    std::vector<ScanEvent> events;
+    size_t edgeCount = outer.size();
+    for (const auto& hole : holes) edgeCount += hole.size();
+    events.reserve(edgeCount);
+    auto addVerticalEdges = [&](const std::vector<Point>& ring) {
+        for (size_t i = 0; i < ring.size(); ++i) {
+            if ((i & 0x3ffU) == 0U) ExecutionControl::instance().checkpoint();
+            const Point& first = ring[i];
+            const Point& second = ring[(i + 1U) % ring.size()];
+            if (first.x != second.x || first.y == second.y) continue;
+            const int low = std::min(first.y, second.y);
+            const int high = std::max(first.y, second.y);
+            events.push_back({low, first.x, true});
+            events.push_back({high, first.x, false});
+        }
+    };
+    addVerticalEdges(outer);
+    for (const auto& hole : holes) addVerticalEdges(hole);
+    std::sort(events.begin(), events.end(), [](const ScanEvent& a,
+                                                const ScanEvent& b) {
+        if (a.y != b.y) return a.y < b.y;
+        if (a.x != b.x) return a.x < b.x;
+        return a.entering < b.entering;
+    });
+
+    std::map<int, size_t> activeCrossings;
+    std::vector<int> crossings;
+    crossings.reserve(events.size());
+    size_t nextEvent = 0;
+    uint64_t scannedRows = 0;
     for (int64_t y = minY; y < static_cast<int64_t>(maxY); ++y) {
-        for (int64_t x = minX; x < static_cast<int64_t>(maxX); ++x) {
-            if ((scanned++ & 0x3ffU) == 0U)
+        if ((scannedRows++ & 0x3ffU) == 0U)
+            ExecutionControl::instance().checkpoint();
+        while (nextEvent < events.size() && events[nextEvent].y <= y) {
+            if ((nextEvent & 0x3ffU) == 0U)
                 ExecutionControl::instance().checkpoint();
-            const double centerX = static_cast<double>(x) + 0.5;
-            const double centerY = static_cast<double>(y) + 0.5;
-            if (!inside(centerX, centerY, outer)) continue;
-            bool inHole = false;
-            for (const auto& hole : holes) {
-                if (inside(centerX, centerY, hole)) {
-                    inHole = true;
-                    break;
-                }
+            const ScanEvent& event = events[nextEvent++];
+            auto crossing = activeCrossings.find(event.x);
+            if (event.entering) {
+                if (crossing == activeCrossings.end())
+                    activeCrossings.emplace(event.x, 1U);
+                else
+                    ++crossing->second;
+            } else if (crossing != activeCrossings.end()) {
+                if (--crossing->second == 0U) activeCrossings.erase(crossing);
             }
-            if (!inHole) {
+        }
+
+        crossings.clear();
+        size_t activeCount = 0;
+        for (const auto& [x, count] : activeCrossings) {
+            if ((activeCount++ & 0x3ffU) == 0U)
+                ExecutionControl::instance().checkpoint();
+            for (size_t i = 0; i < count; ++i) crossings.push_back(x);
+        }
+
+        if ((crossings.size() & 1U) != 0U) {
+            const double centerY = static_cast<double>(y) + 0.5;
+            for (int64_t x = minX; x < static_cast<int64_t>(maxX); ++x) {
+                const double centerX = static_cast<double>(x) + 0.5;
+                if (!inside(centerX, centerY, outer)) continue;
+                bool inHole = false;
+                for (const auto& hole : holes) {
+                    if (inside(centerX, centerY, hole)) {
+                        inHole = true;
+                        break;
+                    }
+                }
+                if (!inHole) cells.insert({static_cast<int>(x), static_cast<int>(y)});
+            }
+            continue;
+        }
+
+        // Even-odd crossings across all rings fill the outer region minus holes.
+        for (size_t i = 0; i < crossings.size(); i += 2U) {
+            const int64_t left = crossings[i];
+            const int64_t right = crossings[i + 1U];
+            for (int64_t x = left; x < right; ++x) {
+                if ((static_cast<uint64_t>(x - left) & 0x3ffU) == 0U)
+                    ExecutionControl::instance().checkpoint();
                 cells.insert({static_cast<int>(x), static_cast<int>(y)});
             }
         }
