@@ -1,0 +1,19 @@
+{
+  "threshold_version": "test-tier-fixtures-v1",
+  "tiers": {
+    "LIGHT": {
+      "max_estimated_raster_point_tests": 100,
+      "max_estimated_anchor_count": 10
+    },
+    "MEDIUM": {
+      "max_estimated_raster_point_tests": 100000000,
+      "max_estimated_anchor_count": 2000000
+    }
+  },
+  "automatic_algorithm_by_tier": {
+    "LIGHT": "hybrid",
+    "MEDIUM": "hybrid",
+    "HEAVY": "hybrid",
+    "UNKNOWN": "hybrid"
+  }
+}

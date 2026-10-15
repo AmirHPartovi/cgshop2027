@@ -1,0 +1,38 @@
+{
+  "policy_version": "cgshop-auto-policy-v1",
+  "exact_model": {
+    "available_for_original_closed_tour_objective": false,
+    "method": null,
+    "light_budget_seconds": 0.0
+  },
+  "tier_policies": {
+    "LIGHT": {
+      "heuristic_portfolio": ["partition", "boustrophedon", "tsp-cov"],
+      "per_algorithm_timeout_seconds": 10.0
+    },
+    "MEDIUM": {
+      "heuristic_portfolio": [
+        "partition",
+        "boustrophedon",
+        "frederickson",
+        "mstc",
+        "column-gen",
+        "tsp-cov"
+      ],
+      "per_algorithm_timeout_seconds": 2.0
+    },
+    "HEAVY": {
+      "heuristic_portfolio": ["partition", "boustrophedon", "stc", "mstc"],
+      "per_algorithm_timeout_seconds": 1.0
+    },
+    "UNKNOWN": {
+      "heuristic_portfolio": ["partition"],
+      "per_algorithm_timeout_seconds": 5.0
+    }
+  },
+  "ip_kont_surrogate_probe": {
+    "enabled_by_default": false,
+    "maximum_estimated_column_count": 0,
+    "budget_seconds": 0.0
+  }
+}

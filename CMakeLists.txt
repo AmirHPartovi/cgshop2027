@@ -25,7 +25,10 @@ set(CORE_SOURCES
     src/core/GeometryUtils.cpp
     src/core/Problem.cpp
     src/core/Solution.cpp
+    src/core/RuntimeConfig.cpp
+    src/core/ExecutionControl.cpp
     src/io/InstanceReader.cpp
+    src/io/SolutionReader.cpp
     src/io/SolutionWriter.cpp
 )
 set(UTIL_SOURCES src/utils/Logger.cpp)
@@ -51,7 +54,10 @@ set(ALGORITHM_SOURCES
 
 add_library(cgshop_core ${CORE_SOURCES} ${UTIL_SOURCES} ${ALGORITHM_SOURCES})
 target_include_directories(cgshop_core PUBLIC src)
-target_compile_definitions(cgshop_core PUBLIC CGSHOP_PROJECT_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+target_compile_definitions(cgshop_core PUBLIC
+    CGSHOP_PROJECT_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+    CGSHOP_DEFAULT_CONFIG="${CMAKE_SOURCE_DIR}/config/default.json"
+)
 if(KONT_CMD_EXECUTABLE)
     target_compile_definitions(cgshop_core PRIVATE
         CGSHOP_KONT_CMD="${KONT_CMD_EXECUTABLE}"

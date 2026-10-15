@@ -1,0 +1,48 @@
+# Algorithm registry and implementation inventory
+
+The registry is the conditional dispatch in `src/main.cpp`; there is no
+independent factory or plugin registry. The CLI makes one concrete object and
+calls its virtual `BaseAlgorithm::solve(timeout)`. `local` is special: the
+dispatch expression first computes a `PartitioningAlgorithm::solve(timeout)`
+solution and passes it to the `LocalSearch` constructor.
+
+**Legend:** “candidate” means a complete `Solution` is returned; all CLI
+results must pass the final C++ validator. “Multi-cutter” distinguishes real
+route assignment from wrapping one route in `makeSolution`, which pads missing
+cutters with one-point stationary tours at `problem.cutterCenter`. “Internal
+validation” refers to an explicit call to `Solution::validate`, not the final
+CLI gate. Randomness is deterministic or absent as stated.
+
+**Shared candidate contract:** `BaseAlgorithm::makeSolution` rejects excess
+route groups, normalizes duplicate consecutive/explicit closing points, and
+pads missing groups with stationary tours. `finishCandidate` validates each
+algorithm's result; an invalid non-partition result is logged and replaced by a
+validated partition candidate, with `requested_algorithm`,
+`algorithm_implementation`, `candidate_source`, `fallback_algorithm`, and
+`fallback_reason` kept distinct in solution metadata. If partition itself is
+invalid, construction fails explicitly. Hybrid also records its portfolio
+winner and retains a validated incumbent when optional improvement is
+cancelled or rejected. Single-route implementations record whether stationary
+padding was needed; this does not imply multi-cutter assignment.
+
+| CLI name (aliases) | Implementation / entry | Actual construction and shared helpers | Cutter/result character | Randomness | Timeout and validation | Limitations / fallback |
+|---|---|---|---|---|---|---|
+| `strip` (none) | `StripAlgorithm::solve`, `StripAlgorithm.cpp` | `coverageCenters`; sort by row then x; divide ordered centers into k groups; `BaseAlgorithm::makeSolution` | Multi-group candidate, then validation | None | Ignores timeout; explicitly validates | On invalid result calls `PartitioningAlgorithm::solve()` without forwarding timeout. “strip” is ordered point partitioning, not a distinct strip-DP method. |
+| `partition` (none) | `PartitioningAlgorithm::solve`, `PartitioningAlgorithm.cpp` | `coverageCenters`; serpentine row order; split ordered centers into k groups; base `makeSolution` | Multi-group candidate | None | Shared cancellation checkpoints and `finishCandidate` validation | The fallback used by numerous algorithms. |
+| `local` (none) | `LocalSearch::solve`, `LocalSearch.cpp` | Constructed in `main.cpp` with a prior partition solve; relocates bounded subsets of coverage anchors between cutter assignments and reconstructs each route | Multi-cutter assignment search | Configured random seed | Central iteration/anchor/move caps; deadline checkpoints; validates every reconstructed candidate | Retains the validated input incumbent and reports search counts, improvement, runtime, and termination reason. |
+| `anchor-cover` (`anchor`) | `AnchorCoverAlgorithm::solve`, `AnchorCoverAlgorithm.cpp` | Repeated maximum uncovered-cell gain over `coverageCenters` and cutter cells; assign next placement to least estimated load | Multi-cutter greedy assignment | None | Checks timeout at outer/placement scan; internal validation | On timeout assigns remaining centers round-robin; invalid candidate falls back to partition. “Cover” is candidate construction, not an intermediate bound. |
+| `balanced-greedy` (`greedy`) | `BalancedGreedyRouteAlgorithm::solve`, `BalancedGreedyRouteAlgorithm.cpp` | Repeatedly choose shortest-load cutter and its nearest unused coverage center; base `makeSolution` | Multi-cutter greedy route groups | None | Checks timeout within candidate scans and remaining-center assignment; internal validation | Remaining centers are assigned round-robin on timeout; invalid candidate falls back to partition. |
+| `boustrophedon` (`a1`, `zigzag`) | `BoustrophedonAlgorithm::solve`, `BoustrophedonAlgorithm.cpp` | `TourConstruction::coveringAnchors` -> column grouping -> `boustrophedon` -> `makeSolution` | Primarily a single route; padded to k tours, not a real multi-cutter allocation | None | Ignores timeout; internal validation | Invalid route falls back to partition. A1 label does not imply multi-cutter output. |
+| `stc` (`a2`) | `StcAlgorithm::solve`, `StcAlgorithm.cpp` | `coveringAnchors` -> `spanningTreeWalk` (grid-neighbor spanning forest plus component links) -> `makeSolution` | Primarily a single tree-walk route; padded to k | None | Ignores timeout; internal validation | Invalid result falls back to partition. |
+| `tsp-cov` (`tsp_cov`, `a3`) | `TspCovAlgorithm::solve`, `TspCovAlgorithm.cpp` | `coveringAnchors` -> nearest-neighbor cycle ordering and bounded 2-opt in `tspCov` -> `makeSolution` | Primarily one route; padded to k | None | TSP helper checks timeout; internal validation | For >3500 anchors or timeout helper returns boustrophedon. Invalid result falls back to partition. This is a heuristic, not an exact TSP solver. |
+| `frederickson` (`b1`) | `FredericksonSplitAlgorithm::solve`, `FredericksonSplitAlgorithm.cpp` | Build boustrophedon and spanning-tree tours; optionally TSP tour; choose shortest; split its closed perimeter with `splitFrederickson` | Multi-cutter output by slicing a single giant tour | None | TSP subcall checks timeout; other work does not; internal validation | Invalid split falls back to partition. |
+| `mstc` (`b2`) | `MstcAlgorithm::solve`, `MstcAlgorithm.cpp` | `coveringAnchors` -> `TourConstruction::mstc` tree component partition and tree walks | Real multi-cutter tree groups | None | Ignores timeout; internal validation | Invalid candidate falls back to partition. |
+| `region-partition` (`b3`) | `RegionPartitionAssignAlgorithm::solve`, `RegionPartitionAssignAlgorithm.cpp` | `coveringAnchors` -> recursive longest-axis bisection -> per-group boustrophedon | Multi-cutter region-ish partition of anchor points | None | Ignores timeout; internal validation | Invalid candidate falls back to partition; bisection sorts points, not polygon-connected regions. |
+| `ilp` (legacy `c1` alias) | `IlpAlgorithm::solve`, `IlpAlgorithm.cpp` | `coveringAnchors`; group anchors by x into columns; LP assigns each column to one cutter and minimizes max summed proxy column cost; reconstruct sorted-anchor closed tours and validate | Multi-cutter assignment candidate, or partition fallback | None | KONT child timeout and exit status checked; complete column assignment parsed; internal route validation | Surrogate only: modeled `cost[j] = 2 * vertical_span(j) + 2` does not encode route order or actual closed-tour makespan. Never certifies original-objective optimality or a valid lower bound. Reports model dimensions, raw solver status/log, termination, and `FEASIBLE_NOT_PROVEN` for a valid recovered route. Timeout has no incumbent because solution extraction follows optimize completion. Uses a unique temporary directory and removes it on handled paths. |
+| `column-gen` (`c2`, `bap`) | `ColumnGenerationAlgorithm::solve`, `ColumnGenerationAlgorithm.cpp` | `coveringAnchors` -> `columnGenerationTours`, using MSTC and split-tour baselines plus budget search/growth | Multi-cutter candidate | No explicit random generator; seed chosen from an unordered set | Helper checks timeout; internal validation | Timeout in `feasible()` is treated as `true`; invalid candidate falls back to partition. “Column generation” here is a heuristic budget/growth routine, not a restricted-master/pricing implementation. |
+| `lns` (`d1`) | `LnsMultiCutterAlgorithm::solve`, `LnsMultiCutterAlgorithm.cpp` | Frederickson incumbent -> full coverage-anchor assignment -> bounded relocation and per-cutter boustrophedon reconstruction | Multi-cutter assignment search | Configured `std::mt19937_64` seed | Central iteration/anchor/move caps; deadline checkpoints; validates each candidate | Never concatenates existing route vertices. Keeps the best validated incumbent and records candidate/move counts, runtime, improvement, and termination. |
+| `hybrid` (`e`, default) | `HybridSolver::solve`, `HybridSolver.cpp` | Sequential portfolio: boustrophedon, STC, Frederickson, MSTC, region partition, ILP, column generation, optionally TSP-Cov for <=2500 anchors; choose minimum canonical makespan; then anchor-relocation `improveLns` | Candidate portfolio with multi- and single-tour/padded candidates | Configured seed for randomized relocation | Computes remaining time between candidates; validates candidates and retains the best incumbent on deadline | Some portfolio members ignore timeout; if none validate, partition fallback. LNS metrics are retained even when it finds no improvement. |
+
+`TourConstruction::stripIlpTours` exists but the registered legacy `ilp` path writes and
+solves its own column-assignment LP in `IlpAlgorithm.cpp`; no call from `ilp` to
+`stripIlpTours` was found.

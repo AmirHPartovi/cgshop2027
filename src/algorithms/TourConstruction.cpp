@@ -1,8 +1,12 @@
 #include "algorithms/TourConstruction.h"
+#include "algorithms/BaseAlgorithm.h"
+#include "core/ExecutionControl.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
+#include <cstdlib>
 #include <functional>
 #include <limits>
 #include <map>
@@ -17,6 +21,11 @@ namespace cgshop2027 {
 namespace {
 
 constexpr Point kNeighbor[4] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+
+int64_t manhattanDistance(Point a, Point b) {
+    return std::llabs(static_cast<int64_t>(a.x) - b.x) +
+           std::llabs(static_cast<int64_t>(a.y) - b.y);
+}
 
 struct DSU {
     std::vector<int> parent;
@@ -60,7 +69,10 @@ std::vector<Point> uniqueConsecutive(std::vector<Point> points) {
 std::unordered_map<Point, int, PointHash> indexMap(const std::vector<Point>& anchors) {
     std::unordered_map<Point, int, PointHash> index;
     index.reserve(anchors.size() * 2U);
-    for (size_t i = 0; i < anchors.size(); ++i) index[anchors[i]] = static_cast<int>(i);
+    for (size_t i = 0; i < anchors.size(); ++i) {
+        if ((i & 0x3ffU) == 0U) ExecutionControl::instance().checkpoint();
+        index[anchors[i]] = static_cast<int>(i);
+    }
     return index;
 }
 
@@ -72,6 +84,7 @@ std::vector<std::vector<int>> spanningTree(const std::vector<Point>& anchors) {
     DSU dsu(n);
     int edges = 0;
     for (int i = 0; i < n; ++i) {
+        if ((i & 0x3ff) == 0) ExecutionControl::instance().checkpoint();
         for (const Point delta : kNeighbor) {
             const auto found = index.find(anchors[static_cast<size_t>(i)] + delta);
             if (found == index.end() || found->second <= i) continue;
@@ -113,6 +126,7 @@ std::vector<Point> walkTree(const std::vector<Point>& anchors,
     std::vector<Point> walk;
     if (anchors.empty()) return walk;
     std::function<void(int, int)> dfs = [&](int u, int parent) {
+        ExecutionControl::instance().checkpoint();
         appendStep(walk, anchors[static_cast<size_t>(u)]);
         for (int v : adj[static_cast<size_t>(u)]) {
             if (v == parent) continue;
@@ -124,51 +138,53 @@ std::vector<Point> walkTree(const std::vector<Point>& anchors,
     return TourConstruction::compactPath(walk);
 }
 
-int interpolate(int a, int b, int step, int length) {
-    if (length == 0) return a;
-    return a + (b - a) * step / length;
+int interpolate(int start, int end, int64_t step) {
+    if (start == end) return start;
+    const int64_t direction = end > start ? 1 : -1;
+    return static_cast<int>(static_cast<int64_t>(start) + direction * step);
 }
 
-Point pointAt(const std::vector<Point>& tour, int distance) {
+Point pointAt(const std::vector<Point>& tour, int64_t distance) {
     if (tour.empty()) return {};
     if (tour.size() == 1U) return tour.front();
-    const int total = TourConstruction::closedLength(tour);
+    const int64_t total = TourConstruction::closedLength(tour);
     if (total <= 0) return tour.front();
     distance %= total;
     if (distance < 0) distance += total;
-    int acc = 0;
+    int64_t acc = 0;
     for (size_t i = 0; i < tour.size(); ++i) {
+        if ((i & 0x3ffU) == 0U) ExecutionControl::instance().checkpoint();
         const Point a = tour[i];
         const Point b = tour[(i + 1) % tour.size()];
-        const int length = a.manhattanDistance(b);
+        const int64_t length = manhattanDistance(a, b);
         if (acc + length >= distance) {
-            const int step = distance - acc;
-            return {interpolate(a.x, b.x, step, length),
-                    interpolate(a.y, b.y, step, length)};
+            const int64_t step = distance - acc;
+            return {interpolate(a.x, b.x, step), interpolate(a.y, b.y, step)};
         }
         acc += length;
     }
     return tour.front();
 }
 
-std::vector<Point> subpath(const std::vector<Point>& tour, int startDistance,
-                           int endDistance) {
+std::vector<Point> subpath(const std::vector<Point>& tour, int64_t startDistance,
+                           int64_t endDistance) {
     std::vector<Point> result;
     if (tour.empty()) return result;
-    const int total = TourConstruction::closedLength(tour);
+    const int64_t total = TourConstruction::closedLength(tour);
     if (total <= 0) return {tour.front()};
     startDistance %= total;
     if (startDistance < 0) startDistance += total;
-    int span = endDistance - startDistance;
+    int64_t span = endDistance - startDistance;
     if (span <= 0) span += total;
     result.push_back(pointAt(tour, startDistance));
-    int acc = 0;
+    int64_t acc = 0;
     for (size_t i = 0; i < tour.size(); ++i) {
+        if ((i & 0x3ffU) == 0U) ExecutionControl::instance().checkpoint();
         const Point a = tour[i];
         const Point b = tour[(i + 1) % tour.size()];
-        const int length = a.manhattanDistance(b);
-        const int vertexDistance = (acc + length) % total;
-        int offset = vertexDistance - startDistance;
+        const int64_t length = manhattanDistance(a, b);
+        const int64_t vertexDistance = (acc + length) % total;
+        int64_t offset = vertexDistance - startDistance;
         if (offset < 0) offset += total;
         if (offset > 0 && offset < span) result.push_back(b);
         acc += length;
@@ -179,9 +195,17 @@ std::vector<Point> subpath(const std::vector<Point>& tour, int startDistance,
 
 std::map<int, std::vector<Point>> columnsOf(const std::vector<Point>& anchors) {
     std::map<int, std::vector<Point>> columns;
-    for (const Point point : anchors) columns[point.x].push_back(point);
-    for (auto& entry : columns)
+    size_t visited = 0;
+    for (const Point point : anchors) {
+        if ((visited++ & 0x3ffU) == 0U) ExecutionControl::instance().checkpoint();
+        columns[point.x].push_back(point);
+    }
+    visited = 0;
+    for (auto& entry : columns) {
+        if ((visited++ & 0x3ffU) == 0U)
+            ExecutionControl::instance().checkpoint();
         std::sort(entry.second.begin(), entry.second.end());
+    }
     return columns;
 }
 
@@ -208,29 +232,36 @@ std::vector<Point> boustrophedonColumns(const std::map<int, std::vector<Point>>&
 
 int twoOptCycle(std::vector<int>& order,
                 const std::vector<Point>& anchors,
-                const std::chrono::steady_clock::time_point& start, double limit) {
+                const std::chrono::steady_clock::time_point& start, double limit,
+                int maxPasses) {
     const int n = static_cast<int>(order.size());
     if (n < 4) return 0;
     auto dist = [&](int i, int j) {
-        return anchors[static_cast<size_t>(order[static_cast<size_t>(i)])].manhattanDistance(
+        return manhattanDistance(
+            anchors[static_cast<size_t>(order[static_cast<size_t>(i)])],
             anchors[static_cast<size_t>(order[static_cast<size_t>((j + n) % n)])]);
     };
     int passes = 0;
     bool improved = true;
-    while (improved && passes < 12 && !TourConstruction::timedOut(start, limit)) {
+    while (improved && passes < maxPasses &&
+           !TourConstruction::timedOut(start, limit)) {
         improved = false;
         ++passes;
         for (int i = 0; i < n && !TourConstruction::timedOut(start, limit); ++i) {
             for (int j = i + 2; j < n && !TourConstruction::timedOut(start, limit); ++j) {
+                if ((j & 0x3ff) == 0) ExecutionControl::instance().checkpoint();
                 if (i == 0 && j == n - 1) continue;
-                const int before = dist(i, i + 1) + dist(j, j + 1);
-                const int after =
-                    anchors[static_cast<size_t>(order[static_cast<size_t>(i)])]
-                        .manhattanDistance(
-                            anchors[static_cast<size_t>(order[static_cast<size_t>(j)])]) +
-                    anchors[static_cast<size_t>(order[static_cast<size_t>(i + 1)])]
-                        .manhattanDistance(anchors[static_cast<size_t>(
-                            order[static_cast<size_t>((j + 1) % n)])]);
+                const int64_t before = dist(i, i + 1) + dist(j, j + 1);
+                const int64_t after = manhattanDistance(
+                                          anchors[static_cast<size_t>(
+                                              order[static_cast<size_t>(i)])],
+                                          anchors[static_cast<size_t>(
+                                              order[static_cast<size_t>(j)])]) +
+                                      manhattanDistance(
+                                          anchors[static_cast<size_t>(
+                                              order[static_cast<size_t>(i + 1)])],
+                                          anchors[static_cast<size_t>(
+                                              order[static_cast<size_t>((j + 1) % n)])]);
                 if (after < before) {
                     std::reverse(order.begin() + i + 1, order.begin() + j + 1);
                     improved = true;
@@ -251,15 +282,19 @@ std::vector<Point> TourConstruction::rectilinearConnect(Point from, Point to) {
 }
 
 std::vector<Point> TourConstruction::coveringAnchors(const Problem& problem) {
+    ExecutionControl::instance().checkpoint();
     const auto cells = problem.regionCells();
     const auto cutter = problem.cutterCells();
     std::vector<Point> result;
     if (cutter.empty()) return result;
     const Point anchor = *std::min_element(cutter.begin(), cutter.end());
     result.reserve(cells.size());
-    for (const Point cell : cells)
+    size_t visited = 0;
+    for (const Point cell : cells) {
+        if ((visited++ & 0x3ffU) == 0U) ExecutionControl::instance().checkpoint();
         result.push_back({cell.x + problem.cutterCenter.x - anchor.x,
                           cell.y + problem.cutterCenter.y - anchor.y});
+    }
     std::sort(result.begin(), result.end());
     result.erase(std::unique(result.begin(), result.end()), result.end());
     return result;
@@ -271,10 +306,21 @@ std::vector<Point> TourConstruction::compactPath(std::vector<Point> points) {
     std::vector<Point> compact;
     compact.push_back(points.front());
     for (size_t i = 1; i + 1 < points.size(); ++i) {
+        if ((i & 0x3ffU) == 0U) ExecutionControl::instance().checkpoint();
         const Point a = compact.back();
         const Point b = points[i];
         const Point c = points[i + 1];
-        if ((a.x == b.x && b.x == c.x) || (a.y == b.y && b.y == c.y)) continue;
+        const int64_t abX = static_cast<int64_t>(b.x) - a.x;
+        const int64_t bcX = static_cast<int64_t>(c.x) - b.x;
+        const int64_t abY = static_cast<int64_t>(b.y) - a.y;
+        const int64_t bcY = static_cast<int64_t>(c.y) - b.y;
+        const bool sameDirectionHorizontal =
+            a.y == b.y && b.y == c.y &&
+            ((abX > 0 && bcX > 0) || (abX < 0 && bcX < 0));
+        const bool sameDirectionVertical =
+            a.x == b.x && b.x == c.x &&
+            ((abY > 0 && bcY > 0) || (abY < 0 && bcY < 0));
+        if (sameDirectionHorizontal || sameDirectionVertical) continue;
         compact.push_back(b);
     }
     compact.push_back(points.back());
@@ -283,39 +329,7 @@ std::vector<Point> TourConstruction::compactPath(std::vector<Point> points) {
 
 Solution TourConstruction::makeSolution(const Problem& problem,
                                         const std::vector<std::vector<Point>>& groups) {
-    auto close = [](const std::vector<Point>& input) {
-        Tour result;
-        if (input.empty()) return result;
-        if (input.size() == 1U) {
-            result.points = input;
-            return result;
-        }
-        result.points.push_back(input.front());
-        for (size_t i = 1; i < input.size(); ++i) {
-            const Point a = result.points.back();
-            const Point b = input[i];
-            if (a.x != b.x && a.y != b.y) result.points.push_back({b.x, a.y});
-            result.points.push_back(b);
-        }
-        const Point first = input.front();
-        const Point last = result.points.back();
-        if (last.x != first.x && last.y != first.y)
-            result.points.push_back({first.x, last.y});
-        result.points = compactPath(result.points);
-        if (result.points.size() > 1U && result.points.front() == result.points.back())
-            result.points.pop_back();
-        return result;
-    };
-    Solution solution;
-    solution.contentType = "CGSHOP2027_Solution";
-    solution.instanceUid = problem.instanceUid;
-    solution.tours.reserve(static_cast<size_t>(problem.numberOfCutters));
-    for (const auto& group : groups) solution.tours.push_back(close(group));
-    while (solution.tours.size() < static_cast<size_t>(problem.numberOfCutters))
-        solution.tours.push_back(close({{0, 0}}));
-    if (solution.tours.size() > static_cast<size_t>(problem.numberOfCutters))
-        solution.tours.resize(static_cast<size_t>(problem.numberOfCutters));
-    return solution;
+    return BaseAlgorithm::makeSolution(problem, groups);
 }
 
 std::vector<Point> TourConstruction::boustrophedon(const std::vector<Point>& anchors) {
@@ -330,9 +344,10 @@ std::vector<Point> TourConstruction::spanningTreeWalk(const std::vector<Point>& 
 
 std::vector<Point> TourConstruction::tspCov(
     const std::vector<Point>& anchors, const std::chrono::steady_clock::time_point& start,
-    double limit) {
+    double limit, int maxAnchors, int twoOptPasses) {
     if (anchors.size() <= 2U) return anchors;
-    if (anchors.size() > 3500U || timedOut(start, limit)) return boustrophedon(anchors);
+    if (anchors.size() > static_cast<size_t>(maxAnchors) ||
+        timedOut(start, limit)) return boustrophedon(anchors);
     std::vector<char> used(anchors.size(), 0);
     std::vector<int> order;
     order.reserve(anchors.size());
@@ -344,9 +359,10 @@ std::vector<Point> TourConstruction::tspCov(
         int best = -1;
         int bestDistance = std::numeric_limits<int>::max();
         for (size_t i = 0; i < anchors.size(); ++i) {
+            if ((i & 0x3ffU) == 0U) ExecutionControl::instance().checkpoint();
             if (used[i] != 0) continue;
-            const int distance =
-                anchors[static_cast<size_t>(current)].manhattanDistance(anchors[i]);
+            const int64_t distance =
+                manhattanDistance(anchors[static_cast<size_t>(current)], anchors[i]);
             if (best < 0 || distance < bestDistance ||
                 (distance == bestDistance && anchors[i] < anchors[static_cast<size_t>(best)])) {
                 best = static_cast<int>(i);
@@ -358,7 +374,7 @@ std::vector<Point> TourConstruction::tspCov(
         order.push_back(best);
         current = best;
     }
-    twoOptCycle(order, anchors, start, limit);
+    twoOptCycle(order, anchors, start, limit, twoOptPasses);
     std::vector<Point> path;
     for (int index : order) appendStep(path, anchors[static_cast<size_t>(index)]);
     return compactPath(path);
@@ -369,16 +385,16 @@ std::vector<std::vector<Point>> TourConstruction::splitFrederickson(
     std::vector<std::vector<Point>> groups(static_cast<size_t>(std::max(k, 0)));
     if (groups.empty()) return groups;
     if (tour.empty()) return groups;
-    const int total = closedLength(tour);
+    const int64_t total = closedLength(tour);
     if (total <= 0 || k <= 1) {
         groups[0] = tour;
         return groups;
     }
-    int cursor = 0;
-    const int base = total / k;
-    const int extra = total % k;
+    int64_t cursor = 0;
+    const int64_t base = total / k;
+    const int64_t extra = total % k;
     for (int i = 0; i < k; ++i) {
-        const int span = base + (i < extra ? 1 : 0);
+        const int64_t span = base + (i < extra ? 1 : 0);
         if (span <= 0) {
             groups[static_cast<size_t>(i)] = {pointAt(tour, cursor)};
         } else {
@@ -401,12 +417,14 @@ std::vector<std::vector<Point>> TourConstruction::mstc(const std::vector<Point>&
     }
     auto adj = spanningTree(anchors);
     std::vector<char> blocked(static_cast<size_t>(n), 0);
-    auto collect = [&](int root) {
+    auto collect = [&](int root, const std::vector<int>& parent) {
         std::vector<int> nodes;
         std::function<void(int, int)> dfs = [&](int u, int p) {
+            ExecutionControl::instance().checkpoint();
             nodes.push_back(u);
             for (int v : adj[static_cast<size_t>(u)]) {
-                if (v == p || blocked[static_cast<size_t>(v)] != 0) continue;
+                if (v == p || blocked[static_cast<size_t>(v)] != 0 ||
+                    parent[static_cast<size_t>(v)] != u) continue;
                 dfs(v, u);
             }
         };
@@ -415,12 +433,14 @@ std::vector<std::vector<Point>> TourConstruction::mstc(const std::vector<Point>&
     };
     int remaining = n;
     for (int part = 0; part + 1 < cutters && remaining > 0; ++part) {
+        ExecutionControl::instance().checkpoint();
         int root = 0;
         while (root < n && blocked[static_cast<size_t>(root)] != 0) ++root;
         if (root >= n) break;
         std::vector<int> parent(static_cast<size_t>(n), -1);
         std::vector<int> size(static_cast<size_t>(n), 0);
         std::function<int(int, int)> calc = [&](int u, int p) {
+            ExecutionControl::instance().checkpoint();
             parent[static_cast<size_t>(u)] = p;
             int total = 1;
             for (int v : adj[static_cast<size_t>(u)]) {
@@ -435,6 +455,7 @@ std::vector<std::vector<Point>> TourConstruction::mstc(const std::vector<Point>&
         int best = -1;
         int bestDiff = std::numeric_limits<int>::max();
         for (int u = 0; u < n; ++u) {
+            if ((u & 0x3ff) == 0) ExecutionControl::instance().checkpoint();
             if (blocked[static_cast<size_t>(u)] != 0 || u == root) continue;
             const int diff = std::abs(size[static_cast<size_t>(u)] - target);
             if (best < 0 || diff < bestDiff) {
@@ -443,7 +464,7 @@ std::vector<std::vector<Point>> TourConstruction::mstc(const std::vector<Point>&
             }
         }
         if (best < 0) best = root;
-        const std::vector<int> nodes = collect(best);
+        const std::vector<int> nodes = collect(best, parent);
         std::vector<Point> subset;
         subset.reserve(nodes.size());
         for (int u : nodes) {
@@ -476,7 +497,10 @@ std::vector<std::vector<Point>> TourConstruction::recursiveBisectionTours(
             const int leftCount = count / 2;
             const int rightCount = count - leftCount;
             int minX = cells.front().x, maxX = minX, minY = cells.front().y, maxY = minY;
+            size_t scanned = 0;
             for (const Point point : cells) {
+                if ((scanned++ & 0x3ffU) == 0U)
+                    ExecutionControl::instance().checkpoint();
                 minX = std::min(minX, point.x);
                 maxX = std::max(maxX, point.x);
                 minY = std::min(minY, point.y);
@@ -511,8 +535,9 @@ std::vector<std::vector<Point>> TourConstruction::stripIlpTours(
         return splitFrederickson(boustrophedon(anchors), cutters);
     }
     const int width = std::min(m, 180);
-    std::vector<std::vector<int>> cost(static_cast<size_t>(width),
-                                       std::vector<int>(static_cast<size_t>(width), 0));
+    std::vector<std::vector<int64_t>> cost(
+        static_cast<size_t>(width),
+        std::vector<int64_t>(static_cast<size_t>(width), 0));
     for (int left = 0; left < width; ++left) {
         std::map<int, std::vector<Point>> block;
         for (int right = left; right < width; ++right) {
@@ -523,17 +548,20 @@ std::vector<std::vector<Point>> TourConstruction::stripIlpTours(
         }
     }
     const int parts = std::min(cutters, width);
-    const int inf = std::numeric_limits<int>::max() / 4;
-    std::vector<std::vector<int>> dp(static_cast<size_t>(parts + 1),
-                                     std::vector<int>(static_cast<size_t>(width + 1), inf));
+    const int64_t inf = std::numeric_limits<int64_t>::max() / 4;
+    std::vector<std::vector<int64_t>> dp(
+        static_cast<size_t>(parts + 1),
+        std::vector<int64_t>(static_cast<size_t>(width + 1), inf));
     std::vector<std::vector<int>> prev(static_cast<size_t>(parts + 1),
                                        std::vector<int>(static_cast<size_t>(width + 1), -1));
     dp[0][0] = 0;
     for (int p = 1; p <= parts; ++p) {
+        ExecutionControl::instance().checkpoint();
         for (int j = 1; j <= width; ++j) {
+            if ((j & 0x1f) == 0) ExecutionControl::instance().checkpoint();
             for (int i = 0; i < j; ++i) {
                 if (dp[static_cast<size_t>(p - 1)][static_cast<size_t>(i)] >= inf) continue;
-                const int candidate =
+                const int64_t candidate =
                     std::max(dp[static_cast<size_t>(p - 1)][static_cast<size_t>(i)],
                              cost[static_cast<size_t>(i)][static_cast<size_t>(j - 1)]);
                 if (candidate < dp[static_cast<size_t>(p)][static_cast<size_t>(j)]) {
@@ -581,7 +609,7 @@ std::vector<std::vector<Point>> TourConstruction::columnGenerationTours(
     const auto treeTours = mstc(anchors, cutters);
     const auto splitTours = splitFrederickson(boustrophedon(anchors), cutters);
     auto lengthOf = [](const std::vector<std::vector<Point>>& groups) {
-        int result = 0;
+        int64_t result = 0;
         for (const auto& group : groups) result = std::max(result, closedLength(group));
         return result;
     };
@@ -598,6 +626,7 @@ std::vector<std::vector<Point>> TourConstruction::columnGenerationTours(
         queue.push(seed);
         seen.insert(seed);
         while (!queue.empty() && !timedOut(start, limit)) {
+            ExecutionControl::instance().checkpoint();
             const Point u = queue.front();
             queue.pop();
             grown.push_back(u);
@@ -620,6 +649,7 @@ std::vector<std::vector<Point>> TourConstruction::columnGenerationTours(
         std::unordered_set<Point, PointHash> uncovered(anchors.begin(), anchors.end());
         int used = 0;
         while (!uncovered.empty()) {
+            ExecutionControl::instance().checkpoint();
             if (used >= cutters) return false;
             if (timedOut(start, limit)) return true;
             const auto grown = growOnce(budget, uncovered);
@@ -638,6 +668,7 @@ std::vector<std::vector<Point>> TourConstruction::columnGenerationTours(
     std::unordered_set<Point, PointHash> uncovered(anchors.begin(), anchors.end());
     std::vector<std::vector<Point>> groups(static_cast<size_t>(cutters));
     for (int i = 0; i < cutters && !uncovered.empty(); ++i) {
+        ExecutionControl::instance().checkpoint();
         const auto grown = growOnce(hi, uncovered);
         for (const Point point : grown) uncovered.erase(point);
         groups[static_cast<size_t>(i)] = boustrophedon(grown);
@@ -656,82 +687,251 @@ std::vector<std::vector<Point>> TourConstruction::columnGenerationTours(
 
 Solution TourConstruction::improveLns(const Problem& problem, Solution solution,
                                       const std::chrono::steady_clock::time_point& start,
-                                      double limit) {
+                                      double limit, int iterations, uint64_t seed,
+                                      int maxAnchors, int maxMoveAnchors) {
+    const auto searchStarted = std::chrono::steady_clock::now();
     auto best = solution;
     std::string error;
     if (!best.validate(problem, &error)) return best;
-    int bestSpan = 0;
-    for (const Tour& tour : best.tours)
-        bestSpan = std::max(bestSpan, closedLength(tour.points));
-    std::mt19937 rng(2027);
-    int iteration = 0;
-    while (!timedOut(start, limit) && iteration < 250) {
-        ++iteration;
-        if (best.tours.empty()) break;
-        size_t longest = 0;
-        size_t shortest = 0;
-        for (size_t i = 1; i < best.tours.size(); ++i) {
-            if (closedLength(best.tours[i].points) > closedLength(best.tours[longest].points))
-                longest = i;
-            if (closedLength(best.tours[i].points) < closedLength(best.tours[shortest].points))
-                shortest = i;
-        }
-        Solution candidate = best;
-        if (iteration % 4 == 0) {
-            std::vector<Point> giant;
-            for (const Tour& tour : best.tours)
-                giant.insert(giant.end(), tour.points.begin(), tour.points.end());
-            giant = compactPath(giant);
-            const int rotate = static_cast<int>(
-                rng() % static_cast<unsigned>(std::max<int>(closedLength(giant), 1)));
-            auto groups = splitFrederickson(giant, problem.numberOfCutters);
-            if (!groups.empty() && rotate > 0 && !groups[0].empty())
-                std::rotate(groups.begin(), groups.begin() + 1, groups.end());
-            candidate = makeSolution(problem, groups);
-        } else if (longest != shortest && candidate.tours[longest].points.size() > 3U) {
-            auto& src = candidate.tours[longest].points;
-            auto& dst = candidate.tours[shortest].points;
-            const int n = static_cast<int>(src.size());
-            const int a = static_cast<int>(rng() % static_cast<unsigned>(n - 1));
-            const int b = std::min(n, a + 1 + static_cast<int>(rng() % 4U));
-            std::vector<Point> moved(src.begin() + a, src.begin() + b);
-            src.erase(src.begin() + a, src.begin() + b);
-            if (src.empty()) src.push_back(moved.front());
-            dst.insert(dst.end(), moved.begin(), moved.end());
-            src = compactPath(src);
-            dst = compactPath(dst);
-        } else {
-            auto& pts = candidate.tours[longest].points;
-            if (pts.size() > 4U) {
-                const int n = static_cast<int>(pts.size());
-                int i = static_cast<int>(rng() % static_cast<unsigned>(n - 3));
-                int j = i + 2 + static_cast<int>(rng() % static_cast<unsigned>(n - i - 2));
-                if (j < n) std::reverse(pts.begin() + i, pts.begin() + j);
-                pts = compactPath(pts);
+    const int64_t initialSpan = solutionMakespan(best);
+    const auto totalLength = [](const Solution& candidate) {
+        int64_t total = 0;
+        for (const Tour& tour : candidate.tours)
+            total += closedLength(tour.points);
+        return total;
+    };
+    const int64_t initialTotal = totalLength(best);
+    int64_t bestTotal = initialTotal;
+    int64_t bestSpan = initialSpan;
+    int64_t currentSpan = initialSpan;
+    int64_t currentTotal = initialTotal;
+    int evaluated = 0;
+    int accepted = 0;
+    int acceptedWithTotalIncrease = 0;
+    int infeasible = 0;
+    int completedIterations = 0;
+    std::string termination = "iteration_limit";
+    auto finish = [&]() {
+        best.meta["lns_candidates_evaluated"] = std::to_string(evaluated);
+        best.meta["lns_moves_accepted"] = std::to_string(accepted);
+        best.meta["lns_accepted_moves_with_total_increase"] =
+            std::to_string(acceptedWithTotalIncrease);
+        best.meta["lns_infeasible_candidates"] = std::to_string(infeasible);
+        best.meta["lns_iterations_completed"] = std::to_string(completedIterations);
+        best.meta["lns_improved"] = bestSpan < initialSpan ? "true" : "false";
+        best.meta["lns_initial_makespan"] = std::to_string(initialSpan);
+        best.meta["lns_final_makespan"] = std::to_string(bestSpan);
+        best.meta["lns_initial_total_route_length"] = std::to_string(initialTotal);
+        best.meta["lns_final_total_route_length"] = std::to_string(bestTotal);
+        best.meta["lns_termination_reason"] = termination;
+        best.meta["lns_runtime_seconds"] = std::to_string(
+            std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                          searchStarted).count());
+        return best;
+    };
+
+    if (problem.numberOfCutters < 2) {
+        termination = "single_cutter";
+        return finish();
+    }
+    if (timedOut(start, limit)) {
+        termination = "deadline";
+        return finish();
+    }
+    if (iterations < 0 || iterations > 100000 || maxAnchors < 1 ||
+        maxMoveAnchors < 1 || maxMoveAnchors > maxAnchors) {
+        termination = "invalid_search_limits";
+        return finish();
+    }
+
+    std::vector<Point> anchors;
+    try {
+        anchors = coveringAnchors(problem);
+    } catch (const ExecutionCancelled&) {
+        termination = "cancelled";
+        return finish();
+    }
+    if (anchors.empty()) {
+        termination = "no_coverage_anchors";
+        return finish();
+    }
+    if (timedOut(start, limit)) {
+        termination = "deadline";
+        return finish();
+    }
+    if (anchors.size() > static_cast<size_t>(maxAnchors)) {
+        termination = "anchor_limit";
+        return finish();
+    }
+
+    std::vector<std::vector<Point>> currentGroups(
+        static_cast<size_t>(problem.numberOfCutters));
+    for (size_t i = 0; i < anchors.size(); ++i) {
+        if ((i & 0x3ffU) == 0U) {
+            if (timedOut(start, limit)) {
+                termination = "deadline";
+                return finish();
+            }
+            try {
+                ExecutionControl::instance().checkpoint();
+            } catch (const ExecutionCancelled&) {
+                termination = "cancelled";
+                return finish();
             }
         }
-        if (!candidate.validate(problem, &error)) continue;
-        int span = 0;
-        for (const Tour& tour : candidate.tours)
-            span = std::max(span, closedLength(tour.points));
-        if (span < bestSpan) {
-            best = candidate;
-            bestSpan = span;
+        const size_t group = std::min(
+            currentGroups.size() - 1U, i * currentGroups.size() / anchors.size());
+        currentGroups[group].push_back(anchors[i]);
+    }
+    auto reconstruct = [&](const std::vector<std::vector<Point>>& assignments) {
+        std::vector<std::vector<Point>> routes;
+        routes.reserve(assignments.size());
+        size_t visited = 0;
+        for (const auto& assignment : assignments) {
+            if ((visited++ & 0xffU) == 0U && timedOut(start, limit)) {
+                throw ExecutionCancelled();
+            }
+            ExecutionControl::instance().checkpoint();
+            routes.push_back(boustrophedon(assignment));
+        }
+        return makeSolution(problem, routes);
+    };
+
+    Solution current;
+    try {
+        current = reconstruct(currentGroups);
+        ++evaluated;
+        if (!current.validate(problem, &error)) {
+            ++infeasible;
+            termination = "infeasible_initial_reconstruction";
+            return finish();
+        }
+        currentSpan = solutionMakespan(current);
+        currentTotal = totalLength(current);
+        if (currentSpan < bestSpan) {
+            best = current;
+            bestSpan = currentSpan;
+            bestTotal = currentTotal;
+        }
+    } catch (const ExecutionCancelled&) {
+        termination = timedOut(start, limit) ? "deadline" : "cancelled";
+        return finish();
+    }
+
+    std::mt19937_64 rng(seed);
+    while (completedIterations < iterations) {
+        if (timedOut(start, limit)) {
+            termination = "deadline";
+            break;
+        }
+        try {
+            ExecutionControl::instance().checkpoint();
+            ++completedIterations;
+            std::vector<int64_t> routeLengths(current.tours.size(), 0);
+            for (size_t i = 0; i < current.tours.size(); ++i) {
+                if ((i & 0xffU) == 0U && timedOut(start, limit)) {
+                    throw ExecutionCancelled();
+                }
+                routeLengths[i] = closedLength(current.tours[i].points);
+            }
+            std::vector<size_t> sourceChoices;
+            int64_t longestLength = -1;
+            for (size_t i = 0; i < currentGroups.size(); ++i) {
+                if ((i & 0xffU) == 0U && timedOut(start, limit)) {
+                    throw ExecutionCancelled();
+                }
+                if (currentGroups[i].empty()) continue;
+                if (routeLengths[i] > longestLength) {
+                    sourceChoices.clear();
+                    longestLength = routeLengths[i];
+                }
+                if (routeLengths[i] == longestLength) sourceChoices.push_back(i);
+            }
+            if (sourceChoices.empty()) {
+                termination = "no_movable_anchors";
+                break;
+            }
+            const size_t source = sourceChoices[
+                static_cast<size_t>(rng() % sourceChoices.size())];
+            std::vector<size_t> targetChoices;
+            int64_t shortestLength = std::numeric_limits<int64_t>::max();
+            for (size_t i = 0; i < currentGroups.size(); ++i) {
+                if ((i & 0xffU) == 0U && timedOut(start, limit)) {
+                    throw ExecutionCancelled();
+                }
+                if (i == source) continue;
+                if (routeLengths[i] < shortestLength) {
+                    targetChoices.clear();
+                    shortestLength = routeLengths[i];
+                }
+                if (routeLengths[i] == shortestLength) targetChoices.push_back(i);
+            }
+            if (targetChoices.empty()) {
+                termination = "no_destination_route";
+                break;
+            }
+            const size_t target = targetChoices[
+                static_cast<size_t>(rng() % targetChoices.size())];
+
+            auto proposedGroups = currentGroups;
+            auto& sourceAnchors = proposedGroups[source];
+            auto& targetAnchors = proposedGroups[target];
+            const size_t moveLimit = std::min(
+                sourceAnchors.size(), static_cast<size_t>(maxMoveAnchors));
+            const size_t moveCount = 1U + static_cast<size_t>(rng() % moveLimit);
+            const size_t moveStart = static_cast<size_t>(
+                rng() % (sourceAnchors.size() - moveCount + 1U));
+            std::vector<Point> moved(
+                sourceAnchors.begin() + static_cast<std::ptrdiff_t>(moveStart),
+                sourceAnchors.begin() +
+                    static_cast<std::ptrdiff_t>(moveStart + moveCount));
+            sourceAnchors.erase(
+                sourceAnchors.begin() + static_cast<std::ptrdiff_t>(moveStart),
+                sourceAnchors.begin() +
+                    static_cast<std::ptrdiff_t>(moveStart + moveCount));
+            targetAnchors.insert(targetAnchors.end(), moved.begin(), moved.end());
+            std::sort(targetAnchors.begin(), targetAnchors.end());
+            if (timedOut(start, limit)) {
+                termination = "deadline";
+                break;
+            }
+
+            Solution candidate = reconstruct(proposedGroups);
+            ++evaluated;
+            if (!candidate.validate(problem, &error)) {
+                ++infeasible;
+                continue;
+            }
+            const int64_t candidateSpan = solutionMakespan(candidate);
+            if (candidateSpan < currentSpan) {
+                const int64_t candidateTotal = totalLength(candidate);
+                if (candidateTotal > currentTotal) ++acceptedWithTotalIncrease;
+                currentGroups = std::move(proposedGroups);
+                current = candidate;
+                currentSpan = candidateSpan;
+                currentTotal = candidateTotal;
+                ++accepted;
+                if (candidateSpan < bestSpan) {
+                    best = std::move(candidate);
+                    bestSpan = candidateSpan;
+                    bestTotal = candidateTotal;
+                }
+            }
+        } catch (const ExecutionCancelled&) {
+            termination = timedOut(start, limit) ? "deadline" : "cancelled";
+            break;
         }
     }
-    return best;
+    return finish();
 }
 
-int TourConstruction::closedLength(const std::vector<Point>& points) {
-    if (points.size() <= 1U) return 0;
-    int length = 0;
-    for (size_t i = 0; i < points.size(); ++i)
-        length += points[i].manhattanDistance(points[(i + 1) % points.size()]);
-    return length;
+int64_t TourConstruction::closedLength(const std::vector<Point>& points) {
+    return closedTourLength(points);
 }
 
 bool TourConstruction::timedOut(const std::chrono::steady_clock::time_point& start,
                                 double limit) {
+    if (ExecutionControl::instance().cancelled()) return true;
     return limit >= 0 && std::chrono::duration<double>(
                              std::chrono::steady_clock::now() - start)
                                  .count() >= limit;

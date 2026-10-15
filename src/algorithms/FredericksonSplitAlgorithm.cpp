@@ -1,9 +1,10 @@
 #include "algorithms/FredericksonSplitAlgorithm.h"
-#include "algorithms/PartitioningAlgorithm.h"
 #include "utils/Logger.h"
 #include "algorithms/TourConstruction.h"
+#include "core/RuntimeConfig.h"
 
 #include <chrono>
+#include <utility>
 
 namespace cgshop2027 {
 Solution FredericksonSplitAlgorithm::solve(double timeoutSeconds) {
@@ -15,16 +16,17 @@ Solution FredericksonSplitAlgorithm::solve(double timeoutSeconds) {
     if (TourConstruction::closedLength(stc) < TourConstruction::closedLength(giant))
         giant = stc;
     if (!TourConstruction::timedOut(start, timeoutSeconds)) {
-        const auto tsp = TourConstruction::tspCov(anchors, start, timeoutSeconds);
+        const auto tsp = TourConstruction::tspCov(
+            anchors, start, timeoutSeconds,
+            runtimeConfig().algorithmParameters.tspMaxAnchors,
+            runtimeConfig().algorithmParameters.twoOptPasses);
         if (TourConstruction::closedLength(tsp) < TourConstruction::closedLength(giant))
             giant = tsp;
     }
     Solution solution = makeSolution(problem_, TourConstruction::splitFrederickson(
                                       giant, problem_.numberOfCutters));
-    std::string error;
-    if (!solution.validate(problem_, &error)) {
-        return PartitioningAlgorithm(problem_).solve(timeoutSeconds);
-    }
-    return solution;
+    return finishCandidate(
+        std::move(solution), "frederickson", timeoutSeconds,
+        "multi_cutter_split_of_single_tour");
 }
 }  // namespace cgshop2027

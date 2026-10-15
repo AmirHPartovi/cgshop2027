@@ -14,6 +14,7 @@ public:
     static Logger& getInstance();
     void setLevel(LogLevel level);
     void setLogLevel(LogLevel level);
+    LogLevel level() const;
     void debug(const std::string& message);
     void info(const std::string& message);
     void warning(const std::string& message);
@@ -27,7 +28,7 @@ private:
     Logger();
     void log(LogLevel level, const std::string& component,
              const std::string& message);
-    std::mutex mutex_;
+    mutable std::mutex mutex_;
     LogLevel minimum_level_{LogLevel::Info};
 };
 

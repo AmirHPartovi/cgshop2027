@@ -1,0 +1,55 @@
+flowchart LR
+  CLI["src/main.cpp"]
+  AlgAPI["BaseAlgorithm"]
+  Algo["Concrete algorithms"]
+  TC["TourConstruction"]
+  Core["core: Problem / Solution / Point"]
+  Point["Point value type / Manhattan distance"]
+  Geometry["GeometryUtils free functions\nnot called by solver path"]
+  Reader["InstanceReader"]
+  SolutionReader["SolutionReader"]
+  Json["embedded Json parser"]
+  Writer["SolutionWriter"]
+  Logger["Logger / LogScope"]
+  Timer["Timer utility"]
+  Kont["optional kont_cmd"]
+  Scripts["Python / shell scripts"]
+  Metrics["solution_metrics.py"]
+  Pyutils["optional cgshop2027_pyutils"]
+  Gurobi["optional gurobi_cl"]
+
+  CLI -->|"direct"| Reader
+  Reader -->|"direct"| Json
+  Reader -->|"direct validate/read"| Core
+  SolutionReader -->|"direct"| Json
+  SolutionReader -->|"direct validates parsed candidate"| Core
+  Writer -->|"direct JSON escaping/formatting"| Json
+  Writer -->|"direct validates before opening output"| Core
+  CLI -->|"constructs"| Algo
+  Algo -->|"inherits"| AlgAPI
+  Algo -->|"direct"| TC
+  Algo -->|"direct"| Core
+  AlgAPI -->|"direct helpers"| Core
+  TC -->|"direct"| Core
+  Core -->|"uses Point operations; raster is private to Problem.cpp"| Point
+  Algo -->|"uses Point operations"| Point
+  TC -->|"uses Point operations"| Point
+  Core -->|"direct logging"| Logger
+  CLI -->|"direct logging"| Logger
+  Reader -->|"direct logging"| Logger
+  Writer -->|"direct logging"| Logger
+  Algo -->|"direct logging"| Logger
+  CLI -->|"direct after validate"| Writer
+  Algo -. "IlpAlgorithm.cpp direct subprocess" .-> Kont
+  Scripts -->|"runs solver / reads JSON"| CLI
+  Scripts -->|"canonical Python objective"| Metrics
+  Scripts -->|"official validation"| Pyutils
+  Scripts -. "placement relaxation only" .-> Gurobi
+
+  subgraph CMake["CMake target structure"]
+    CoreLib["cgshop_core\ncore + I/O + utils + algorithms"]
+    Solver["solver executable"]
+    Tests["3 C++ + 1 Python CTest"]
+    CoreLib --> Solver
+    CoreLib --> Tests
+  end

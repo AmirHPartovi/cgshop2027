@@ -1,18 +1,16 @@
-#include "algorithms/PartitioningAlgorithm.h"
 #include "utils/Logger.h"
 #include "algorithms/RegionPartitionAssignAlgorithm.h"
 #include "algorithms/TourConstruction.h"
 
+#include <utility>
+
 namespace cgshop2027 {
-Solution RegionPartitionAssignAlgorithm::solve(double) {
+Solution RegionPartitionAssignAlgorithm::solve(double timeoutSeconds) {
     LogScope scope("algorithm.region-partition", "solve");
     const auto anchors = TourConstruction::coveringAnchors(problem_);
     Solution solution = makeSolution(problem_, TourConstruction::recursiveBisectionTours(
                                       anchors, problem_.numberOfCutters));
-    std::string error;
-    if (!solution.validate(problem_, &error)) {
-        return PartitioningAlgorithm(problem_).solve();
-    }
-    return solution;
+    return finishCandidate(
+        std::move(solution), "region-partition", timeoutSeconds);
 }
 }  // namespace cgshop2027

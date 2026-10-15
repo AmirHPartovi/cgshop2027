@@ -1,0 +1,208 @@
+flowchart TD
+  Entry["main(argc, argv)"]
+  Parse["parseOptions"]
+  Read["InstanceReader::readInstance"]
+  Resolve["resolveInputPath"]
+  Json["json::parseFile / Parser::parse"]
+  ParseFields["polygon / point"]
+  Model["populate Problem"]
+  ProblemCheck["Problem::validate"]
+  Raster["Problem::regionCells / cutterCells"]
+  Dispatch["hard-coded conditional dispatch"]
+  VirtualSolve["algorithm->solve(timeout)\nvirtual target inferred from selected concrete object"]
+  FinalCheck["Solution::validate"]
+  Covered["Problem::isCovered(tours)"]
+  Write["SolutionWriter::write"]
+  ReadCandidate["SolutionReader::readSolution\nused by tests and candidate consumers"]
+
+  Entry -->|"direct"| Parse
+  Entry -->|"direct"| Read
+  Entry -->|"direct only for local initializer"| Partition
+  Read -->|"direct"| Resolve
+  Read -->|"direct"| Json
+  Json -->|"direct through parser routines"| ParseFields
+  Read -->|"direct"| ParseFields
+  ParseFields -->|"returns parsed coordinates"| Model
+  Read -->|"direct after model population"| ProblemCheck
+  Entry -->|"direct"| Dispatch
+  Dispatch -. "virtual target inferred from concrete construction in main.cpp" .-> VirtualSolve
+  Entry -->|"direct final gate"| FinalCheck
+  VirtualSolve -->|"returns candidate"| FinalCheck
+  FinalCheck -->|"direct"| ProblemCheck
+  FinalCheck -->|"direct"| Covered
+  ProblemCheck -->|"direct"| Raster
+  Covered -->|"direct"| Raster
+  Entry -->|"direct only after check succeeds"| Write
+  ReadCandidate -->|"direct"| Json
+  ReadCandidate -->|"direct"| FinalCheck
+  Write -->|"direct validation before serialization"| FinalCheck
+
+  subgraph Targets["Concrete algorithm entry points; edges from virtual call are inferred"]
+    Strip["StripAlgorithm::solve"]
+    Partition["PartitioningAlgorithm::solve"]
+    Local["LocalSearch::solve"]
+    Anchor["AnchorCoverAlgorithm::solve"]
+    Greedy["BalancedGreedyRouteAlgorithm::solve"]
+    Boustro["BoustrophedonAlgorithm::solve"]
+    STC["StcAlgorithm::solve"]
+    TSP["TspCovAlgorithm::solve"]
+    Fred["FredericksonSplitAlgorithm::solve"]
+    MSTC["MstcAlgorithm::solve"]
+    Region["RegionPartitionAssignAlgorithm::solve"]
+    ILP["IlpAlgorithm::solve"]
+    Column["ColumnGenerationAlgorithm::solve"]
+    LNS["LnsMultiCutterAlgorithm::solve"]
+    Hybrid["HybridSolver::solve"]
+  end
+  VirtualSolve -.-> Strip
+  VirtualSolve -.-> Partition
+  VirtualSolve -.-> Local
+  VirtualSolve -.-> Anchor
+  VirtualSolve -.-> Greedy
+  VirtualSolve -.-> Boustro
+  VirtualSolve -.-> STC
+  VirtualSolve -.-> TSP
+  VirtualSolve -.-> Fred
+  VirtualSolve -.-> MSTC
+  VirtualSolve -.-> Region
+  VirtualSolve -.-> ILP
+  VirtualSolve -.-> Column
+  VirtualSolve -.-> LNS
+  VirtualSolve -.-> Hybrid
+
+  Centers["BaseAlgorithm::coverageCenters"]
+  BaseMake["BaseAlgorithm::makeSolution / makeClosedTour"]
+  BaseRoute["BaseAlgorithm::validTour / tourLength"]
+  Anchors["TourConstruction::coveringAnchors"]
+  BoustroHelper["TourConstruction::boustrophedon"]
+  TreeWalk["TourConstruction::spanningTreeWalk"]
+  TspHelper["TourConstruction::tspCov -> twoOptCycle"]
+  Split["TourConstruction::splitFrederickson"]
+  MstcHelper["TourConstruction::mstc"]
+  Bisection["TourConstruction::recursiveBisectionTours"]
+  ColumnHelper["TourConstruction::columnGenerationTours"]
+  Improve["TourConstruction::improveLns"]
+  AreaLB["TourConstruction::areaLowerBound"]
+  ClosedLength["TourConstruction::closedLength"]
+  TCSolution["TourConstruction::makeSolution"]
+  RouteHelpers["pointAt / subpath / closedLength / compactPath"]
+  InternalCheck["Solution::validate"]
+  Timed["BaseAlgorithm::timedOut / TourConstruction::timedOut"]
+  Kont["solveWithKont -> runKont -> fork/exec/waitpid/kill"]
+  Subprocess["kont_cmd child process"]
+
+  Strip -->|"direct"| Centers
+  Strip -->|"direct"| BaseMake
+  Strip -->|"direct"| InternalCheck
+  Partition -->|"direct"| Centers
+  Partition -->|"direct"| BaseMake
+  Local -->|"direct"| InternalCheck
+  Local -->|"direct"| BaseRoute
+  Local -->|"direct"| Timed
+  Local -. "invalid initial candidate" .-> Partition
+  Anchor -->|"direct"| Centers
+  Anchor -->|"direct region/cutter cell queries"| Raster
+  Anchor -->|"direct"| BaseMake
+  Anchor -->|"direct"| Timed
+  Anchor -->|"direct"| InternalCheck
+  Anchor -. "invalid candidate" .-> Partition
+  Greedy -->|"direct"| Centers
+  Greedy -->|"direct"| BaseMake
+  Greedy -->|"direct"| Timed
+  Greedy -->|"direct"| InternalCheck
+  Greedy -. "invalid candidate" .-> Partition
+  Boustro -->|"direct"| Anchors
+  Boustro -->|"direct"| BoustroHelper
+  Boustro -->|"direct"| BaseMake
+  Boustro -->|"direct"| InternalCheck
+  Boustro -. "invalid candidate" .-> Partition
+  STC -->|"direct"| Anchors
+  STC -->|"direct"| TreeWalk
+  STC -->|"direct"| BaseMake
+  STC -->|"direct"| InternalCheck
+  STC -. "invalid candidate" .-> Partition
+  TSP -->|"direct"| Anchors
+  TSP -->|"direct"| TspHelper
+  TSP -->|"direct"| BaseMake
+  TSP -->|"direct"| InternalCheck
+  TSP -. "invalid candidate" .-> Partition
+  Fred -->|"direct"| Anchors
+  Fred -->|"direct"| BoustroHelper
+  Fred -->|"direct"| TreeWalk
+  Fred -->|"direct"| TspHelper
+  Fred -->|"direct"| Split
+  Fred -->|"direct"| ClosedLength
+  Fred -->|"direct timeout predicate"| Timed
+  Fred -->|"direct"| InternalCheck
+  Fred -. "invalid candidate" .-> Partition
+  MSTC -->|"direct"| Anchors
+  MSTC -->|"direct"| MstcHelper
+  MSTC -->|"direct"| BaseMake
+  MSTC -->|"direct"| InternalCheck
+  MSTC -. "invalid candidate" .-> Partition
+  Region -->|"direct"| Anchors
+  Region -->|"direct"| Bisection
+  Region -->|"direct"| BaseMake
+  Region -->|"direct"| InternalCheck
+  Region -. "invalid candidate" .-> Partition
+  ILP -->|"direct"| Kont
+  ILP -->|"direct through solveWithKont"| Anchors
+  ILP -->|"direct route assembly"| TCSolution
+  ILP -->|"direct after route construction"| InternalCheck
+  ILP -. "unavailable or invalid assignment" .-> Partition
+  Column -->|"direct"| Anchors
+  Column -->|"direct"| ColumnHelper
+  Column -->|"direct"| BaseMake
+  Column -->|"direct"| InternalCheck
+  Column -. "invalid candidate" .-> Partition
+  LNS -->|"direct"| Fred
+  LNS -->|"direct"| Improve
+  LNS -->|"direct"| InternalCheck
+  LNS -. "invalid candidate" .-> Partition
+  Hybrid -->|"direct sequential candidate calls"| Boustro
+  Hybrid -->|"direct sequential candidate calls"| STC
+  Hybrid -->|"direct sequential candidate calls"| Fred
+  Hybrid -->|"direct sequential candidate calls"| MSTC
+  Hybrid -->|"direct sequential candidate calls"| Region
+  Hybrid -->|"direct sequential candidate calls"| ILP
+  Hybrid -->|"direct sequential candidate calls"| Column
+  Hybrid -->|"conditional direct candidate call"| TSP
+  Hybrid -->|"direct"| InternalCheck
+  Hybrid -->|"direct"| AreaLB
+  Hybrid -->|"direct anchor-count check"| Anchors
+  Hybrid -->|"direct makespan comparisons"| ClosedLength
+  Hybrid -->|"direct"| Improve
+  Hybrid -. "no accepted candidate" .-> Partition
+
+  Centers -->|"direct"| Raster
+  Anchors -->|"direct"| Raster
+  Split -->|"direct"| RouteHelpers
+  TspHelper -->|"direct"| Timed
+  TspHelper -->|"direct"| ClosedLength
+  MstcHelper -->|"direct"| TreeWalk
+  Bisection -->|"direct"| BoustroHelper
+  ColumnHelper -->|"direct"| MstcHelper
+  ColumnHelper -->|"direct"| Split
+  ColumnHelper -->|"direct"| BoustroHelper
+  ColumnHelper -->|"direct"| Timed
+  Improve -->|"direct validation"| InternalCheck
+  Improve -->|"direct"| Split
+  Improve -->|"direct"| TCSolution
+  Improve -->|"direct"| RouteHelpers
+  Improve -->|"direct"| Timed
+  InternalCheck -->|"direct"| Covered
+  Kont -->|"direct process-management path"| Subprocess
+
+  subgraph ScriptCalls["Independent scripts; exact integration varies by runner"]
+    Runner["run_all.sh / benchmark.py / run_paper_algorithms.py / solve_all.py"]
+    Child["solver subprocess"]
+    Official["validate.py -> pyutils read / check_for_errors"]
+    Eval["evaluate_all.py -> pyutils check_for_errors"]
+    Outputs["TSV / PNG / SVG writers"]
+    Metrics["solution_metrics.makespan / tour_length"]
+    Runner -->|"subprocess; some runners add limits"| Child
+    Runner -->|"optional or selected official check"| Official
+    Runner -->|"direct artifact writes"| Outputs
+    Runner -->|"direct canonical objective"| Metrics
+    Eval -->|"direct"| Official
+  end

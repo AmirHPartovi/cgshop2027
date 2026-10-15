@@ -1,0 +1,11 @@
+{
+  "content_type": "CGSHOP2027_Instance",
+  "instance_uid": "profiler-medium",
+  "region_to_cover": {
+    "outer_boundary": {"x": [0, 1000, 1000, 0], "y": [0, 0, 1000, 1000]},
+    "inner_boundaries": []
+  },
+  "cutter": {"x": [0, 1, 1, 0], "y": [0, 0, 1, 1]},
+  "cutter_center": [0, 0],
+  "number_of_cutters": 1
+}

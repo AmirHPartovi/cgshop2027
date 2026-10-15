@@ -39,6 +39,10 @@ void Logger::setLevel(LogLevel level) {
 }
 
 void Logger::setLogLevel(LogLevel level) { setLevel(level); }
+LogLevel Logger::level() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return minimum_level_;
+}
 void Logger::debug(const std::string& message) {
     log(LogLevel::Debug, "", message);
 }

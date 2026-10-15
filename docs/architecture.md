@@ -1,34 +1,91 @@
 # Solver Architecture
 
-The solver is organized into four layers:
+## Runtime flow
 
-- `core/` contains value-based geometry, problem representation, coverage, and
-  solution validation.
-- `io/` translates the official CG:SHOP 2027 JSON representation to and from
-  the core model.
-- `algorithms/` contains interchangeable implementations of `BaseAlgorithm`.
-  Algorithms return complete solutions and must not bypass `Solution::validate`.
-- `utils/` provides logging and timeout primitives shared by all layers.
+`src/main.cpp` is the executable entry point and algorithm registry. It parses
+the input/output paths, algorithm name, and optional time limit; reads the
+instance; constructs the selected algorithm; validates the returned solution
+with `Solution::validate`; and writes it only after that check succeeds.
+Algorithm names and aliases are selected in a hard-coded conditional chain in
+`main.cpp`, not through a separate plugin or registration mechanism.
 
-## Algorithm contract
+## Module map
 
-Every algorithm:
+- `src/core/` defines the domain model. `Problem` stores the region, cutter,
+  cutter center, and cutter count; validates instance geometry; rasterizes the
+  region and cutter into integer cells; and tests whether tours cover the
+  region. `Solution` stores one point sequence per cutter and validates tour
+  count, non-empty routes, rectilinear edges, and coverage.
+- `src/io/` translates the JSON instance format into `Problem` and writes
+  `Solution` as JSON. The reader invokes `Problem::validate`; the writer is
+  called by the CLI only after solution validation. The official Python
+  checker is separate, in `scripts/validate.py`.
+- `src/algorithms/` contains implementations of `BaseAlgorithm`. The base
+  class provides shared tour construction, coverage-center generation,
+  rectilinear tour-length and makespan calculations, timeout checking, and
+  solution assembly. Missing cutter routes are stationary at the instance's
+  cutter center, duplicate consecutive/explicit closing points are normalized,
+  and excess route groups are rejected. Algorithm candidates are validated
+  before return; invalid candidates use a logged, metadata-marked partition
+  fallback, while an invalid partition result is an explicit failure.
+  Requested algorithm, actual implementation, and candidate source remain
+  separate metadata. `src/core/ExecutionControl` supplies the shared
+  monotonic deadline and cancellation checkpoints used by geometry,
+  construction, validation, hybrid incumbent retention, and KONT child cleanup.
+  The CLI reserves a finalization window and distinguishes a timeout fallback
+  from normal completion in solution metadata. The concrete implementations are strip, partition,
+  local search, anchor cover, balanced greedy, boustrophedon (A1), STC (A2),
+  TSP coverage (A3), Frederickson split (B1), MSTC (B2), region partition
+  (B3), KONT vertical-column assignment surrogate (`ilp`, legacy C1 alias),
+  column generation (C2), LNS (D1), and
+  hybrid (E).
+- `src/utils/` contains logging (`Logger` / `LogScope`) and a standalone
+  `Timer`. The shared algorithm timeout predicate is implemented in
+  `BaseAlgorithm`, rather than in `Timer`.
+- `tests/` builds four CTest executables: geometry, algorithms, I/O, and
+  execution control, plus registered Python regression suites.
+- `scripts/` contains the official-validator adapter, local fixture runner,
+  benchmark/evaluation drivers, result analysis, and visualization helpers.
 
-1. receives an immutable `Problem`;
-2. returns exactly `number_of_cutters` tours;
-3. uses integer axis-aligned tour vertices and implicit closure;
-4. checks its timeout inside potentially expensive loops;
-5. can be selected from the CLI without changing the I/O layer.
+## Feasibility and objective boundaries
 
-The authoritative feasibility check is the official `pyutils27` verifier. The
-C++ validator mirrors its coverage semantics so algorithms can be tested without
-Python.
+Tours are represented by their listed vertices with an implicit edge from the
+last vertex back to the first. Both `BaseAlgorithm::tourLength` and the Python
+benchmark drivers include that closing edge when calculating route length.
+The C++ coverage check expands each rectilinear edge over its integer lattice
+centers and applies the cutter-cell offset at each center. The official
+`cgshop2027_pyutils` checker, when installed, is invoked separately by
+`scripts/validate.py` and by the `--official` option in
+`scripts/benchmark.py` / `scripts/auto_solve.py`.
 
-## Reproducible workflow
+The C++ validator is the gate in the solver executable; it is not a substitute
+for demonstrating that the official checker has accepted a candidate. Use the
+official checker before treating a solution as eligible for quality
+comparisons.
+
+The `ilp` / `c1` implementation may call `kont_cmd` if it was found at CMake
+configuration time. The model assigns vertical strips to cutters and minimizes
+the largest modeled strip load; tours are constructed afterward and validated.
+If that backend is unavailable or its constructed result fails validation,
+the implementation uses the partition fallback. This is not an exact
+formulation or proof of optimality for the minimum-makespan closed-tour
+objective. The separate `scripts/ilp_coverage.py` study is a cutter-placement
+set-cover relaxation, as described in [ilp-analysis.md](ilp-analysis.md).
+
+## Build and verification paths
+
+The CMake project builds `cgshop_core`, the `solver` executable, and the three
+CTest targets:
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
 ctest --test-dir build --output-on-failure
-./scripts/run_all.sh
 ```
+
+`scripts/run_all.sh` runs the partition algorithm on local fixtures and calls
+the official checker when its Python package is available. For a
+resource-limited algorithm/instance matrix, use `scripts/benchmark.py`; pass
+`--official` to require the official checker for each candidate.
+`scripts/auto_solve.py` also requires official validation before selecting or
+writing a result.

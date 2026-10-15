@@ -7,6 +7,8 @@ import argparse
 import json
 from pathlib import Path
 
+from solution_metrics import makespan
+
 
 COLORS = (
     "#e41a1c",
@@ -22,16 +24,6 @@ COLORS = (
 
 def polygon_points(item: dict) -> list[tuple[int, int]]:
     return list(zip(item["x"], item["y"]))
-
-
-def tour_length(tour: dict) -> int:
-    points = polygon_points(tour)
-    if len(points) < 2:
-        return 0
-    return sum(
-        abs(a[0] - b[0]) + abs(a[1] - b[1])
-        for a, b in zip(points, points[1:] + points[:1])
-    )
 
 
 def bounds(instance: dict, solution: dict) -> tuple[int, int, int, int]:
@@ -64,8 +56,8 @@ def main() -> int:
     pad = 2
     width = max(max_x - min_x + 2 * pad, 1)
     height = max(max_y - min_y + 2 * pad, 1)
-    makespan = max((tour_length(tour) for tour in solution.get("tours", [])), default=0)
-    title = args.title or f"{instance.get('instance_uid', '')}  makespan={makespan}"
+    score = makespan(solution)
+    title = args.title or f"{instance.get('instance_uid', '')}  makespan={score}"
     output = args.output
     if output is None:
         output = args.solution.with_suffix(".svg")
@@ -116,7 +108,7 @@ def main() -> int:
     )
     svg.append("</svg>")
     output.write_text("\n".join(svg) + "\n")
-    print(f"wrote {output} (makespan={makespan})")
+    print(f"wrote {output} (makespan={score})")
     return 0
 
 

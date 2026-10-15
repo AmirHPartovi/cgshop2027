@@ -1,0 +1,38 @@
+flowchart LR
+  Instance["*.instance.json\ncontent_type, uid, region, cutter, center, k"]
+  Reader["InstanceReader + embedded JSON parser"]
+  CandidateReader["SolutionReader + embedded JSON parser"]
+  Problem["Problem"]
+  Polygon["outer boundary / holes / cutter"]
+  Raster["regionCells / cutterCells\ninteger cell-center rasterization"]
+  Anchors["coverage centers / covering anchors"]
+  Algo["selected algorithm"]
+  Tours["k tour point arrays"]
+  Internal["Solution::validate\nuid, count, non-empty, axis alignment, coverage"]
+  Writer["SolutionWriter\nvalidate, escape strings, serialize"]
+  Artifact["*.solution.json"]
+  Official["pyutils check_for_errors\nscripts/validate.py"]
+  Score["Canonical C++ / Python makespan\nmax closed Manhattan length"]
+  Batch["benchmark / solve_all / evaluate_all"]
+  Tables["TSV comparisons"]
+  Figures["PNG / SVG plots"]
+
+  Instance --> Reader --> Problem
+  Artifact -. "optional candidate parsing" .-> CandidateReader --> Internal
+  Problem --> Polygon --> Raster --> Anchors --> Algo
+  Problem --> Algo
+  Algo --> Tours --> Internal
+  Internal -->|"success"| Writer --> Artifact
+  Internal -->|"reject"| Algo
+  Artifact --> Official
+  Artifact --> Score
+  Instance --> Official
+  Instance --> Batch
+  Artifact --> Batch
+  Score --> Batch
+  Batch --> Tables
+  Batch --> Figures
+
+  Note["C++ validator is the CLI gate.\nOfficial validation is additional; Python score\nuses scripts/solution_metrics.py."]
+  Internal -.-> Note
+  Official -.-> Note

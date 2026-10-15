@@ -1,0 +1,17 @@
+{
+  "content_type": "NOT_A_CGSHOP_INSTANCE",
+  "instance_uid": "invalid-content-type",
+  "region_to_cover": {
+    "outer_boundary": {
+      "x": [0, 1, 1, 0],
+      "y": [0, 0, 1, 1]
+    },
+    "inner_boundaries": []
+  },
+  "cutter": {
+    "x": [0, 1, 1, 0],
+    "y": [0, 0, 1, 1]
+  },
+  "cutter_center": [0, 0],
+  "number_of_cutters": 1
+}

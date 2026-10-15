@@ -2,6 +2,7 @@
 #include "Json.h"
 #include "utils/Logger.h"
 #include <cmath>
+#include <limits>
 #include <filesystem>
 #include <stdexcept>
 #include <vector>
@@ -49,22 +50,28 @@ std::string resolveInputPath(const std::string& input) {
 }
 
 std::vector<Point> polygon(const json::Value& v) {
-  const auto& x=v.at("x").array; const auto& y=v.at("y").array;
-  if(x.size()!=y.size()) throw std::runtime_error("x/y lengths differ");
-  std::vector<Point> r; for(size_t i=0;i<x.size();++i) {
-    if(x[i].type!=json::Value::NUMBER||y[i].type!=json::Value::NUMBER||
-       std::floor(x[i].number)!=x[i].number||std::floor(y[i].number)!=y[i].number)
-      throw std::runtime_error("polygon coordinates must be integers");
-    r.push_back({static_cast<int>(x[i].number),static_cast<int>(y[i].number)});
-  } return r;
+  const auto& xValue = v.at("x");
+  const auto& yValue = v.at("y");
+  if (xValue.type != json::Value::ARRAY || yValue.type != json::Value::ARRAY) {
+    throw std::runtime_error("polygon coordinates must be arrays");
+  }
+  const auto& x = xValue.array;
+  const auto& y = yValue.array;
+  if (x.size() != y.size()) throw std::runtime_error("x/y lengths differ");
+  std::vector<Point> result;
+  result.reserve(x.size());
+  for (size_t i = 0; i < x.size(); ++i) {
+    result.push_back({json::integer(x[i], "polygon x coordinate"),
+                      json::integer(y[i], "polygon y coordinate")});
+  }
+  return result;
 }
 Point point(const json::Value& v) {
-  const auto& x=v.type==json::Value::ARRAY?v.array.at(0):v.at("x");
-  const auto& y=v.type==json::Value::ARRAY?v.array.at(1):v.at("y");
-  if(x.type!=json::Value::NUMBER||y.type!=json::Value::NUMBER||
-     std::floor(x.number)!=x.number||std::floor(y.number)!=y.number)
-    throw std::runtime_error("cutter_center coordinates must be integers");
-  return {static_cast<int>(x.number),static_cast<int>(y.number)};
+  if (v.type != json::Value::ARRAY || v.array.size() != 2U) {
+    throw std::runtime_error("cutter_center must be an array of exactly two coordinates");
+  }
+  return {json::integer(v.array[0], "cutter_center x coordinate"),
+          json::integer(v.array[1], "cutter_center y coordinate")};
 }
 }
 std::unique_ptr<Problem> InstanceReader::readInstance(const std::string& f) {
@@ -72,19 +79,40 @@ std::unique_ptr<Problem> InstanceReader::readInstance(const std::string& f) {
   const std::string resolved = resolveInputPath(f);
   Logger::instance().info("reader", "loading input=" + resolved);
   auto root = json::parseFile(resolved);
+  if (root.type != json::Value::OBJECT) {
+    throw std::runtime_error("instance JSON root must be an object");
+  }
   auto p = std::make_unique<Problem>();
-  p->contentType=root.at("content_type").string; p->instanceUid=root.at("instance_uid").string;
-  const auto& region=root.at("region_to_cover"); p->outerBoundary=polygon(region.at("outer_boundary"));
-  if(region.object.count("inner_boundaries")) for(const auto& h:region.at("inner_boundaries").array) p->innerBoundaries.push_back(polygon(h));
-  p->cutter=polygon(root.at("cutter")); p->cutterCenter=point(root.at("cutter_center"));
+  const auto& contentType = root.at("content_type");
+  const auto& instanceUid = root.at("instance_uid");
+  if (contentType.type != json::Value::STRING ||
+      contentType.string != "CGSHOP2027_Instance") {
+    throw std::runtime_error("unsupported instance content_type");
+  }
+  if (instanceUid.type != json::Value::STRING) {
+    throw std::runtime_error("instance_uid must be a string");
+  }
+  p->contentType = contentType.string;
+  p->instanceUid = instanceUid.string;
+  const auto& region = root.at("region_to_cover");
+  p->outerBoundary = polygon(region.at("outer_boundary"));
+  const auto& holes = region.at("inner_boundaries");
+  if (holes.type != json::Value::ARRAY) {
+    throw std::runtime_error("inner_boundaries must be an array");
+  }
+  for (const auto& hole : holes.array) p->innerBoundaries.push_back(polygon(hole));
+  p->cutter = polygon(root.at("cutter"));
+  p->cutterCenter = point(root.at("cutter_center"));
   const auto& cutter_count = root.at("number_of_cutters");
   if (cutter_count.type != json::Value::NUMBER ||
       cutter_count.number < 1.0 ||
+      cutter_count.number > static_cast<double>(std::numeric_limits<int>::max()) ||
       std::floor(cutter_count.number) != cutter_count.number) {
     throw std::runtime_error("number_of_cutters must be a positive integer");
   }
-  p->numberOfCutters=static_cast<int>(cutter_count.number);
-  std::string error; if(!p->validate(&error)) throw std::runtime_error("invalid instance: "+error);
+  p->numberOfCutters = json::integer(cutter_count, "number_of_cutters");
+  std::string error;
+  if (!p->validate(&error)) throw std::runtime_error("invalid instance: " + error);
   Logger::instance().info(
       "reader", "loaded uid=" + p->instanceUid +
                     " region_cells=" + std::to_string(p->regionArea()) +

@@ -8,20 +8,7 @@ import json
 import time
 from pathlib import Path
 
-
-def makespan(solution: dict) -> int:
-    result = 0
-    for tour in solution.get("tours", []):
-        points = list(zip(tour["x"], tour["y"]))
-        if len(points) > 1:
-            result = max(
-                result,
-                sum(
-                    abs(a[0] - b[0]) + abs(a[1] - b[1])
-                    for a, b in zip(points, [*points[1:], points[0]])
-                ),
-            )
-    return result
+from solution_metrics import makespan
 
 
 def main() -> int:

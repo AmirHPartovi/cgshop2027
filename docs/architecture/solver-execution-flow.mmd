@@ -1,0 +1,32 @@
+flowchart TD
+  Start["solver -i INSTANCE -o OUTPUT [-a NAME] [-t SECONDS]"]
+  Options["parseOptions\ninput/output required; default algorithm hybrid; default timeout -1"]
+  Input["InstanceReader::readInstance"]
+  Path["resolveInputPath\nabsolute, cwd, project root, data, data/test, cwd ancestors"]
+  Json["embedded JSON parser"]
+  Model["Problem populated from content_type, instance_uid, region, cutter, center, cutter count"]
+  Check["Problem::validate\npolygon structure/orientation, rasterized area, cutter count"]
+  Select["hard-coded if/else dispatch in main.cpp"]
+  Algo["selected BaseAlgorithm concrete object"]
+  Solve["virtual solve(timeout)"]
+  Candidate["Solution candidate"]
+  Valid["Solution::validate\nuid, exactly k tours, non-empty, rectilinear, coverage"]
+  Error{"valid?"}
+  Write["SolutionWriter::write\ncreates parent dirs; truncates output path"]
+  Done["success"]
+  Fail["exception caught; log error; non-zero exit"]
+  Sub["IlpAlgorithm optional KONT branch\nwrite LP/script in temp dir; fork/exec; poll/wait; timeout kill"]
+  Fallback["candidate-specific partition fallback or hybrid retained best"]
+  Internal["C++ raster coverage"]
+  Official["separate official pyutils validation\nscripts/validate.py / optional script integration"]
+
+  Start --> Options --> Input --> Path --> Json --> Model --> Check --> Select
+  Check -->|"invalid instance throws"| Fail
+  Select --> Algo --> Solve --> Candidate --> Valid --> Error
+  Algo -. "IlpAlgorithm only" .-> Sub
+  Sub -. "unavailable, timeout, parse failure, or invalid candidate" .-> Fallback
+  Fallback --> Candidate
+  Valid --> Internal
+  Error -->|"yes"| Write --> Done
+  Error -->|"no: main throws; algorithm-internal fallback may already have run"| Fail
+  Done -. "not invoked automatically by CLI" .-> Official

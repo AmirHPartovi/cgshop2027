@@ -4,7 +4,7 @@
 
 namespace cgshop2027 {
 
-// C1: exact min-max assignment of vertical strips (array-partition DP).
+// Legacy "ilp" entry point for the IP-KONT vertical-column assignment surrogate.
 class IlpAlgorithm final : public BaseAlgorithm {
 public:
     using BaseAlgorithm::BaseAlgorithm;

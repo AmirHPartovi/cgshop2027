@@ -1,9 +1,10 @@
 #include "algorithms/BalancedGreedyRouteAlgorithm.h"
-#include "algorithms/PartitioningAlgorithm.h"
+#include "core/ExecutionControl.h"
 #include "utils/Logger.h"
 
 #include <chrono>
 #include <limits>
+#include <utility>
 
 namespace cgshop2027 {
 
@@ -25,6 +26,10 @@ Solution BalancedGreedyRouteAlgorithm::solve(double timeoutSeconds) {
         size_t best = centers.size();
         double score = std::numeric_limits<double>::infinity();
         for (size_t i = 0; i < centers.size(); ++i) {
+            if ((i & 0x3ffU) == 0U) {
+                ExecutionControl::instance().checkpoint();
+                if (timedOut(start, timeoutSeconds)) break;
+            }
             if (used[i]) continue;
             const double distance = static_cast<double>(
                 current[group].manhattanDistance(centers[i]));
@@ -43,17 +48,17 @@ Solution BalancedGreedyRouteAlgorithm::solve(double timeoutSeconds) {
         used[best] = true;
         --remaining;
         if (timedOut(start, timeoutSeconds)) {
-            for (size_t i = 0; i < centers.size(); ++i)
+            for (size_t i = 0; i < centers.size(); ++i) {
+                if ((i & 0x3ffU) == 0U)
+                    ExecutionControl::instance().checkpoint();
                 if (!used[i]) groups[i % groups.size()].push_back(centers[i]);
+            }
             break;
         }
     }
     Solution solution = makeSolution(problem_, groups);
-    std::string error;
-    if (!solution.validate(problem_, &error)) {
-        return PartitioningAlgorithm(problem_).solve(timeoutSeconds);
-    }
-    return solution;
+    return finishCandidate(
+        std::move(solution), "balanced-greedy", timeoutSeconds);
 }
 
 }

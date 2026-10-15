@@ -4,6 +4,7 @@
 #include "core/Solution.h"
 
 #include <chrono>
+#include <cstdint>
 #include <vector>
 
 namespace cgshop2027 {
@@ -16,7 +17,8 @@ public:
     static std::vector<Point> spanningTreeWalk(const std::vector<Point>& anchors);
     static std::vector<Point> tspCov(const std::vector<Point>& anchors,
                                      const std::chrono::steady_clock::time_point& start,
-                                     double limit);
+                                     double limit, int maxAnchors = 3500,
+                                     int twoOptPasses = 12);
     static std::vector<std::vector<Point>> splitFrederickson(
         const std::vector<Point>& tour, int k);
     static std::vector<std::vector<Point>> mstc(const std::vector<Point>& anchors,
@@ -30,10 +32,12 @@ public:
         const std::chrono::steady_clock::time_point& start, double limit);
     static Solution improveLns(const Problem& problem, Solution solution,
                                const std::chrono::steady_clock::time_point& start,
-                               double limit);
+                               double limit, int iterations = 250,
+                               uint64_t seed = 2027, int maxAnchors = 5000,
+                               int maxMoveAnchors = 16);
     static Solution makeSolution(const Problem& problem,
                                  const std::vector<std::vector<Point>>& groups);
-    static int closedLength(const std::vector<Point>& points);
+    static int64_t closedLength(const std::vector<Point>& points);
     static bool timedOut(const std::chrono::steady_clock::time_point& start,
                          double limit);
     static int areaLowerBound(const Problem& problem);

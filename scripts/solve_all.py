@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import math
 import os
@@ -15,6 +16,10 @@ import tempfile
 import time
 import zlib
 from pathlib import Path
+
+from benchmark import process_tree_snapshot
+from runtime_config import ROOT, load_runtime_config
+from solution_metrics import makespan
 
 
 ALGORITHMS = (
@@ -38,20 +43,6 @@ ALGORITHMS = (
 
 def points(item: dict) -> list[tuple[int, int]]:
     return list(zip(item.get("x", []), item.get("y", [])))
-
-
-def tour_length(tour: dict) -> int:
-    path = points(tour)
-    if len(path) < 2:
-        return 0
-    return sum(
-        abs(a[0] - b[0]) + abs(a[1] - b[1])
-        for a, b in zip(path, path[1:] + path[:1])
-    )
-
-
-def makespan(solution: dict) -> int:
-    return max((tour_length(tour) for tour in solution.get("tours", [])), default=0)
 
 
 def inside(x: float, y: float, polygon: list[tuple[int, int]]) -> bool:
@@ -179,7 +170,8 @@ def official_validator_available() -> bool:
 
 
 def run_bounded(command: list[str], timeout: float, memory_mb: int
-                ) -> tuple[subprocess.CompletedProcess[str] | None, str | None]:
+                ) -> tuple[subprocess.CompletedProcess[str] | None, str | None,
+                           dict[str, object]]:
     """Run a solver and stop it when either resource limit is reached."""
     with tempfile.TemporaryFile(mode="w+b") as stderr_file:
         process = subprocess.Popen(
@@ -191,18 +183,30 @@ def run_bounded(command: list[str], timeout: float, memory_mb: int
         deadline = time.monotonic() + timeout
         memory_limit_kib = memory_mb * 1024
         limit_error = None
+        started = time.monotonic()
+        peak_rss_kib = None
+        process_tree_cpu_seconds = None
+        rss_samples = 0
+        cpu_samples = 0
         while process.poll() is None:
             if time.monotonic() >= deadline:
                 limit_error = f"time_limit: exceeded {timeout:g}s"
                 break
             try:
-                rss = int(subprocess.check_output(
-                    ["ps", "-o", "rss=", "-p", str(process.pid)],
-                    text=True,
-                    stderr=subprocess.DEVNULL,
-                ).strip() or "0")
-            except (OSError, subprocess.SubprocessError, ValueError):
-                rss = 0
+                snapshot = process_tree_snapshot(process.pid)
+            except (OSError, subprocess.SubprocessError, ValueError, RuntimeError):
+                limit_error = "memory_probe_failed: unable to determine process-tree RSS"
+                break
+            rss = int(snapshot["rss_kib"])
+            if rss > 0:
+                peak_rss_kib = max(peak_rss_kib or 0, rss)
+                rss_samples += 1
+            cpu_value = snapshot.get("cpu_seconds")
+            if isinstance(cpu_value, (int, float)):
+                process_tree_cpu_seconds = max(
+                    process_tree_cpu_seconds or 0.0, float(cpu_value)
+                )
+                cpu_samples += 1
             if rss > memory_limit_kib:
                 limit_error = f"memory_limit: exceeded {memory_mb} MiB"
                 break
@@ -215,49 +219,120 @@ def run_bounded(command: list[str], timeout: float, memory_mb: int
         process.wait()
         stderr_file.seek(0)
         stderr = stderr_file.read().decode(errors="replace")
+        metrics: dict[str, object] = {
+            "wall_seconds": time.monotonic() - started,
+            "child_process_tree_cpu_seconds": process_tree_cpu_seconds,
+            "peak_process_tree_rss_bytes": (
+                peak_rss_kib * 1024 if peak_rss_kib is not None else None
+            ),
+            "process_tree_rss_sample_count": rss_samples,
+            "process_tree_cpu_sample_count": cpu_samples,
+            "termination_reason": (
+                "wall_clock_timeout" if limit_error and
+                limit_error.startswith("time_limit") else
+                "process_tree_memory_limit" if limit_error and
+                limit_error.startswith("memory_limit") else
+                "resource_probe_error" if limit_error else
+                f"process_exit_{process.returncode}" if process.returncode != 0 else
+                "process_exited"
+            ),
+            "memory_enforcement": "sampled aggregate process-tree RSS watchdog",
+            "cpu_measurement": "sampled cumulative process-tree CPU from ps",
+        }
         if limit_error:
-            return None, limit_error
-        return subprocess.CompletedProcess(
-            command, process.returncode, "", stderr
-        ), None
+            return None, limit_error, metrics
+        return subprocess.CompletedProcess(command, process.returncode, "", stderr), None, metrics
+
+
+def store_resource_metrics(
+    row: dict[str, str], metrics: dict[str, object], prefix: str = ""
+) -> None:
+    for key in (
+        "wall_seconds", "child_process_tree_cpu_seconds",
+        "peak_process_tree_rss_bytes", "process_tree_rss_sample_count",
+        "process_tree_cpu_sample_count", "termination_reason",
+    ):
+        value = metrics.get(key)
+        row[f"{prefix}{key}"] = "null" if value is None else str(value)
+    if not prefix and metrics.get("memory_enforcement") is not None:
+        row["memory_enforcement"] = str(metrics["memory_enforcement"])
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Run and compare all algorithms on all *.instance.json files."
     )
-    parser.add_argument("--solver", type=Path, default=Path("build/bin/solver"))
-    parser.add_argument("--instances", type=Path, default=Path("data/test"))
-    parser.add_argument("--output", type=Path, default=Path("build/all-results"))
-    parser.add_argument("--timeout", type=float, default=10.0)
+    root = ROOT
+    parser.add_argument("--config", type=Path, default=root / "config/default.json")
+    parser.add_argument("--solver", type=Path, default=root / "build/bin/solver")
+    parser.add_argument("--instances", type=Path, default=root / "data/test")
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--timeout", type=float,
+                        help="compatibility alias setting both timeout limits")
     parser.add_argument(
         "--official-timeout",
         type=float,
         default=30.0,
         help="official-validator timeout per run in seconds (default: 30)",
     )
-    parser.add_argument("--memory", type=int, default=2048,
-                        help="per-run memory limit in MiB (default: 2048)")
+    parser.add_argument("--memory", type=int, help="per-process limit in MiB")
     parser.add_argument(
         "--master-table",
         type=Path,
         default=None,
-        help="wide comparison table path (default: <instances>/master-table.tsv)",
+        help="wide comparison table path (default: <output>/master-table.tsv)",
     )
     parser.add_argument(
         "--algorithms",
-        default=",".join(ALGORITHMS),
-        help="comma-separated algorithm names (default: all built-in algorithms)",
+        default=None,
+        help="comma-separated algorithm override",
     )
-    parser.add_argument("--official", action="store_true",
+    official_group = parser.add_mutually_exclusive_group()
+    official_group.add_argument("--official", dest="official", action="store_true",
                         help="also run cgshop2027_pyutils when installed")
-    args = parser.parse_args()
-    args.output.mkdir(parents=True, exist_ok=True)
-    algorithms = tuple(
-        algorithm.strip()
-        for algorithm in args.algorithms.split(",")
-        if algorithm.strip()
+    official_group.add_argument("--no-official", dest="official", action="store_false")
+    parser.set_defaults(official=None)
+    overwrite_group = parser.add_mutually_exclusive_group()
+    overwrite_group.add_argument(
+        "--overwrite", dest="overwrite", action="store_true",
+        help="allow reusing an existing output directory and replacing its artifacts",
     )
+    overwrite_group.add_argument("--no-overwrite", dest="overwrite", action="store_false")
+    parser.set_defaults(overwrite=None)
+    args = parser.parse_args()
+    overrides = {}
+    if args.timeout is not None:
+        overrides["per_instance_timeout_seconds"] = args.timeout
+        overrides["per_algorithm_timeout_seconds"] = args.timeout
+    if args.memory is not None:
+        overrides["memory_limit_mib"] = args.memory
+    if args.algorithms is not None:
+        overrides["algorithms"] = [item.strip() for item in args.algorithms.split(",")]
+    if args.output is not None:
+        overrides["output_directory"] = str(args.output)
+    if args.official is not None:
+        overrides["official_validation"] = args.official
+    if args.overwrite is not None:
+        overrides["overwrite_existing"] = args.overwrite
+    try:
+        requested, effective, adjustments = load_runtime_config(args.config, overrides)
+    except (OSError, ValueError) as error:
+        parser.error(str(error))
+    algorithms = tuple(requested["algorithms"])
+    if effective["benchmark_jobs"] != 1:
+        parser.error("solve_all is sequential; use benchmark.py for benchmark_jobs > 1")
+    if effective["randomized_repetitions"] != 1:
+        parser.error("solve_all does not run repetitions; use benchmark.py")
+    if args.timeout is None:
+        args.timeout = min(effective["per_instance_timeout_seconds"],
+                           effective["per_algorithm_timeout_seconds"])
+    if args.memory is None:
+        args.memory = effective["memory_limit_mib"]
+    if args.output is None:
+        args.output = root / effective["output_directory"] / "solve-all"
+    elif not args.output.is_absolute():
+        args.output = root / args.output
+    args.overwrite = effective["overwrite_existing"]
     unknown = sorted(set(algorithms) - set(ALGORITHMS))
     if unknown:
         parser.error("unknown algorithms: " + ", ".join(unknown))
@@ -267,16 +342,60 @@ def main() -> int:
         parser.error("--official-timeout must be positive")
     if args.memory <= 0:
         parser.error("--memory must be positive")
+    if not algorithms:
+        parser.error("at least one algorithm must be selected")
+    if not args.solver.is_file() or not os.access(args.solver, os.X_OK):
+        parser.error(f"solver executable not found or not executable: {args.solver}")
+    if not args.instances.is_dir():
+        parser.error(f"instance directory does not exist: {args.instances}")
     instances = sorted(args.instances.glob("*.instance.json"))
-    master_table = args.master_table or args.instances / "master-table.tsv"
-    if args.official and not official_validator_available():
+    if not instances:
+        parser.error(f"no *.instance.json inputs found in {args.instances}")
+    for instance_path in instances:
+        try:
+            instance = json.loads(instance_path.read_text())
+        except (OSError, json.JSONDecodeError) as error:
+            parser.error(f"cannot read valid JSON instance {instance_path}: {error}")
+        if not isinstance(instance, dict) or not isinstance(
+            instance.get("instance_uid"), str
+        ):
+            parser.error(f"instance has no string instance_uid: {instance_path}")
+    if args.output.exists() and not args.overwrite:
+        parser.error(
+            f"output directory already exists: {args.output} (pass --overwrite)"
+        )
+    if args.output.exists() and not args.output.is_dir():
+        parser.error(f"output path is not a directory: {args.output}")
+    master_table = args.master_table or args.output / "master-table.tsv"
+    if master_table.exists() and not args.overwrite:
+        parser.error(
+            f"master table already exists: {master_table} (pass --overwrite)"
+        )
+    use_official = effective["official_validation"]
+    if use_official and not official_validator_available():
         parser.error(
             "--official requires the cgshop2027_pyutils package in the "
             "selected Python interpreter"
         )
-    use_official = args.official
-    validate_script = Path(__file__).with_name("validate.py")
+    validate_script = Path(__file__).resolve().with_name("validate.py")
     long_rows: list[dict[str, str]] = []
+    args.output.mkdir(parents=True, exist_ok=True)
+    config_report = {
+        "requested": requested,
+        "effective": effective,
+        "automatic_adjustments": adjustments,
+        "intended_max_active_solver_workers":
+            effective["benchmark_jobs"] * effective["threads_per_solver"],
+        "memory_enforcement": "sampled process-tree RSS watchdog",
+        "official_validation": "enabled" if use_official else "disabled",
+    }
+    (args.output / "runtime-config.json").write_text(
+        json.dumps(config_report, indent=2) + "\n", encoding="utf-8"
+    )
+
+    global_deadline = None
+    if effective["global_run_deadline_seconds"] is not None:
+        global_deadline = time.monotonic() + effective["global_run_deadline_seconds"]
 
     # Keep the outer loop algorithm-first so every algorithm is evaluated over
     # the complete instance set, while each instance/algorithm run remains
@@ -287,6 +406,7 @@ def main() -> int:
             instance = json.loads(instance_path.read_text())
             solution_path = args.output / f"{uid}.{algorithm}.solution.json"
             figure_path = args.output / f"{uid}.{algorithm}.png"
+            run_config_path = Path(str(solution_path) + ".run-config.json")
             started = time.monotonic()
             row = {
                 "instance_uid": uid,
@@ -298,25 +418,128 @@ def main() -> int:
                 "seconds": "",
                 "solution": str(solution_path),
                 "figure": str(figure_path),
+                "config_report": str(run_config_path),
                 "time_limit_seconds": str(args.timeout),
                 "memory_limit_mib": str(args.memory),
                 "error": "",
+                "wall_seconds": "null",
+                "child_process_tree_cpu_seconds": "null",
+                "peak_process_tree_rss_bytes": "null",
+                "process_tree_rss_sample_count": "0",
+                "process_tree_cpu_sample_count": "0",
+                "termination_reason": "not_started",
+                "memory_enforcement": "sampled aggregate process-tree RSS watchdog",
+                "cpu_measurement": "sampled cumulative process-tree CPU from ps",
+                "official_wall_seconds": "null",
+                "official_child_process_tree_cpu_seconds": "null",
+                "official_peak_process_tree_rss_bytes": "null",
+                "official_process_tree_rss_sample_count": "0",
+                "official_process_tree_cpu_sample_count": "0",
+                "official_termination_reason": "not_run",
             }
+            wall_timeout = args.timeout
+            if global_deadline is not None:
+                remaining = global_deadline - time.monotonic()
+                if remaining <= 0:
+                    run_effective = copy.deepcopy(effective)
+                    run_effective["algorithms"] = [algorithm]
+                    run_effective["output_directory"] = str(args.output)
+                    run_effective["effective_per_run_wall_clock_timeout_seconds"] = 0
+                    run_effective["official_validation"] = use_official
+                    run_config_path.write_text(
+                        json.dumps({
+                            "requested": requested,
+                            "effective": run_effective,
+                            "automatic_adjustments": adjustments + [
+                                "global run deadline expired before this run"
+                            ],
+                            "memory_enforcement": "sampled process-tree RSS watchdog",
+                        }, indent=2) + "\n",
+                        encoding="utf-8",
+                    )
+                    row["status"] = "global_deadline"
+                    row["error"] = "global run deadline reached before this run"
+                    row["seconds"] = "0.000"
+                    long_rows.append(row)
+                    print(f"{uid}\t{algorithm}\tglobal_deadline\t")
+                    continue
+                wall_timeout = min(wall_timeout, remaining)
+            run_effective = copy.deepcopy(effective)
+            run_effective["algorithms"] = [algorithm]
+            run_effective["output_directory"] = str(args.output)
+            run_effective["effective_per_run_wall_clock_timeout_seconds"] = wall_timeout
+            run_effective["per_instance_timeout_seconds"] = min(
+                run_effective["per_instance_timeout_seconds"], wall_timeout
+            )
+            run_effective["per_algorithm_timeout_seconds"] = min(
+                run_effective["per_algorithm_timeout_seconds"], wall_timeout
+            )
+            finalization_reserve = min(5.0, max(0.25, wall_timeout * 0.2))
+            run_effective["cooperative_search_budget_cap_seconds"] = max(
+                0.0, wall_timeout - finalization_reserve
+            )
+            run_effective["finalization_reserve_seconds"] = finalization_reserve
+            run_effective["official_validation"] = use_official
+            run_config_path.write_text(
+                json.dumps({
+                    "requested": requested,
+                    "effective": run_effective,
+                    "automatic_adjustments": adjustments + [
+                        f"effective per-run wall-clock timeout is {wall_timeout:g}s",
+                        f"cooperative search reserves {finalization_reserve:g}s for validation and output",
+                    ],
+                    "memory_enforcement": "sampled process-tree RSS watchdog",
+                }, indent=2) + "\n",
+                encoding="utf-8",
+            )
             try:
-                solution_path.unlink(missing_ok=True)
-                completed, limit_error = run_bounded(
+                if args.overwrite:
+                    solution_path.unlink(missing_ok=True)
+                    figure_path.unlink(missing_ok=True)
+                completed, limit_error, solver_metrics = run_bounded(
                     [str(args.solver), "-i", str(instance_path), "-o",
-                     str(solution_path), "-a", algorithm, "-t", str(args.timeout)],
-                    args.timeout, args.memory,
+                     str(solution_path), "-a", algorithm,
+                     "--instance-timeout", str(run_effective["per_instance_timeout_seconds"]),
+                     "--algorithm-timeout", str(run_effective["per_algorithm_timeout_seconds"]),
+                     "--kont-timeout", str(min(effective["ip_kont_timeout_seconds"], wall_timeout)),
+                     "--memory-limit-mib", str(effective["memory_limit_mib"]),
+                     "--threads-per-solver", str(effective["threads_per_solver"]),
+                     "--benchmark-jobs", str(effective["benchmark_jobs"]),
+                     "--seed", str(effective["random_seed"]),
+                     "--lns-iterations",
+                     str(effective["algorithm_parameters"]["lns_iterations"]),
+                     "--tsp-max-anchors",
+                     str(effective["algorithm_parameters"]["tsp_max_anchors"]),
+                     "--two-opt-passes",
+                     str(effective["algorithm_parameters"]["two_opt_passes"]),
+                     "--exact-policy", effective["exact_solving_policy"],
+                     "--exact-max-candidates",
+                     str(effective["exact_solver_max_candidates"]),
+                     "--portfolio", ",".join(effective["heuristic_portfolio"]),
+                     "--tier", "all",
+                     "--repetitions", str(effective["randomized_repetitions"]),
+                     "--output-dir", str(args.output),
+                     "--log-level", effective["logging_verbosity"],
+                     *(["--global-deadline",
+                        str(effective["global_run_deadline_seconds"])]
+                       if effective["global_run_deadline_seconds"] is not None else []),
+                     *(["--overwrite"] if args.overwrite else [])],
+                    wall_timeout, args.memory,
                 )
+                store_resource_metrics(row, solver_metrics)
                 if limit_error:
                     row["status"] = limit_error.split(":", 1)[0]
                     row["error"] = limit_error
                     raise RuntimeError(limit_error)
-                assert completed is not None
+                if completed is None:
+                    raise RuntimeError("bounded solver returned no process result")
                 if completed.returncode != 0:
-                    if completed.returncode < 0 and -completed.returncode == signal.SIGKILL:
+                    if ("deadline" in completed.stderr.lower() or
+                            (completed.returncode < 0 and
+                             -completed.returncode == signal.SIGKILL)):
                         row["status"] = "memory_limit"
+                        if "deadline" in completed.stderr.lower():
+                            row["status"] = "time_limit"
                     else:
                         row["status"] = "failed"
                     row["error"] = completed.stderr.strip()
@@ -326,21 +549,30 @@ def main() -> int:
                 row["makespan"] = str(makespan(solution))
                 render_png(instance, solution, figure_path)
                 if use_official:
-                    try:
-                        official = subprocess.run(
+                    validation_timeout = args.official_timeout
+                    if global_deadline is not None:
+                        validation_timeout = min(
+                            validation_timeout,
+                            max(0.0, global_deadline - time.monotonic()),
+                        )
+                    if validation_timeout <= 0:
+                        limit_error = "global run deadline reached before official validation"
+                        official = None
+                    else:
+                        official, validation_error, validation_metrics = run_bounded(
                             [sys.executable, str(validate_script),
                              str(instance_path), str(solution_path)],
-                            stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT,
-                            text=True,
-                            timeout=args.official_timeout,
+                            validation_timeout, args.memory,
                         )
-                    except subprocess.TimeoutExpired:
-                        row["status"] = "official_time_limit"
-                        row["error"] = (
-                            f"official validator exceeded "
-                            f"{args.official_timeout:g}s"
+                        store_resource_metrics(row, validation_metrics, "official_")
+                    if official is None:
+                        row["status"] = (
+                            "global_deadline"
+                            if global_deadline is not None and
+                            time.monotonic() >= global_deadline
+                            else "official_resource_limit"
                         )
+                        row["error"] = limit_error if validation_timeout <= 0 else validation_error
                         raise RuntimeError(row["error"])
                     row["official_valid"] = str(official.returncode == 0).lower()
                     if official.returncode != 0:
@@ -364,7 +596,16 @@ def main() -> int:
 
     fields = ("instance_uid", "algorithm", "status", "valid", "official_valid",
               "makespan", "seconds", "time_limit_seconds", "memory_limit_mib",
-              "solution", "figure", "error")
+              "wall_seconds", "child_process_tree_cpu_seconds",
+              "peak_process_tree_rss_bytes", "process_tree_rss_sample_count",
+              "process_tree_cpu_sample_count", "termination_reason",
+              "memory_enforcement", "official_wall_seconds",
+              "official_child_process_tree_cpu_seconds",
+              "official_peak_process_tree_rss_bytes",
+              "official_process_tree_rss_sample_count",
+              "official_process_tree_cpu_sample_count",
+              "official_termination_reason",
+              "solution", "figure", "config_report", "error")
     detailed = args.output / "all-results.tsv"
     detailed.write_text(
         "\t".join(fields) + "\n"

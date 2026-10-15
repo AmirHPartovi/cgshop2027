@@ -1,11 +1,12 @@
 #include "algorithms/AnchorCoverAlgorithm.h"
-#include "algorithms/PartitioningAlgorithm.h"
+#include "core/ExecutionControl.h"
 #include "utils/Logger.h"
 
 #include <algorithm>
 #include <chrono>
 #include <limits>
 #include <unordered_set>
+#include <utility>
 
 namespace cgshop2027 {
 
@@ -26,17 +27,25 @@ Solution AnchorCoverAlgorithm::solve(double timeoutSeconds) {
     size_t remaining = centers.size();
     while (remaining != 0U) {
         if (timedOut(start, timeoutSeconds)) {
-            for (size_t i = 0; i < centers.size(); ++i)
+            for (size_t i = 0; i < centers.size(); ++i) {
+                if ((i & 0x3ffU) == 0U)
+                    ExecutionControl::instance().checkpoint();
                 if (!used[i]) groups[i % groups.size()].push_back(centers[i]);
+            }
             break;
         }
         size_t best = centers.size();
         size_t bestGain = 0;
         for (size_t i = 0; i < centers.size(); ++i) {
-            if (timedOut(start, timeoutSeconds)) break;
+            if ((i & 0x3fU) == 0U)
+                ExecutionControl::instance().checkpoint();
+            if ((i & 0x3fU) == 0U && timedOut(start, timeoutSeconds)) break;
             if (used[i]) continue;
             size_t gain = 0;
+            size_t shapeVisits = 0;
             for (const Point cell : shape) {
+                if ((shapeVisits++ & 0x3ffU) == 0U)
+                    ExecutionControl::instance().checkpoint();
                 const Point coveredCell{centers[i].x + cell.x - problem_.cutterCenter.x,
                                         centers[i].y + cell.y - problem_.cutterCenter.y};
                 if (target.count(coveredCell) != 0U && covered.count(coveredCell) == 0U)
@@ -53,7 +62,10 @@ Solution AnchorCoverAlgorithm::solve(double timeoutSeconds) {
         for (size_t i = 1; i < groups.size(); ++i)
             if (load[i] < load[group]) group = i;
         groups[group].push_back(centers[best]);
+        size_t shapeVisits = 0;
         for (const Point cell : shape) {
+            if ((shapeVisits++ & 0x3ffU) == 0U)
+                ExecutionControl::instance().checkpoint();
             const Point coveredCell{centers[best].x + cell.x - problem_.cutterCenter.x,
                                     centers[best].y + cell.y - problem_.cutterCenter.y};
             if (target.count(coveredCell) != 0U) covered.insert(coveredCell);
@@ -64,11 +76,7 @@ Solution AnchorCoverAlgorithm::solve(double timeoutSeconds) {
         --remaining;
     }
     Solution solution = makeSolution(problem_, groups);
-    std::string error;
-    if (!solution.validate(problem_, &error)) {
-        return PartitioningAlgorithm(problem_).solve(timeoutSeconds);
-    }
-    return solution;
+    return finishCandidate(std::move(solution), "anchor-cover", timeoutSeconds);
 }
 
 }  // namespace cgshop2027

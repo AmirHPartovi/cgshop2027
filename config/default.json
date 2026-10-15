@@ -1,0 +1,37 @@
+{
+  "global_run_deadline_seconds": null,
+  "per_instance_timeout_seconds": 10.0,
+  "per_algorithm_timeout_seconds": 10.0,
+  "ip_kont_timeout_seconds": 30.0,
+  "threads_per_solver": 1,
+  "benchmark_jobs": 1,
+  "memory_limit_mib": 2048,
+  "random_seed": 2027,
+  "algorithms": ["hybrid"],
+  "algorithm_parameters": {
+    "lns_iterations": 250,
+    "lns_max_anchors": 5000,
+    "lns_max_move_anchors": 16,
+    "tsp_max_anchors": 3500,
+    "two_opt_passes": 12
+  },
+  "difficulty_tier_filter": ["all"],
+  "exact_solving_policy": "ip_kont_surrogate",
+  "exact_solver_max_candidates": 0,
+  "exact_solver_exploratory_time_budget_seconds": 0.0,
+  "heuristic_portfolio": [
+    "boustrophedon",
+    "stc",
+    "frederickson",
+    "mstc",
+    "region-partition",
+    "ilp",
+    "column-gen",
+    "tsp-cov"
+  ],
+  "randomized_repetitions": 1,
+  "output_directory": "build/results",
+  "overwrite_existing": false,
+  "logging_verbosity": "info",
+  "official_validation": false
+}

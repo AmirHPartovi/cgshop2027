@@ -11,9 +11,12 @@ from __future__ import annotations
 
 import argparse
 import json
-import subprocess
+import sys
 import tempfile
 from pathlib import Path
+
+from benchmark import run_bounded_process_with_metrics
+from runtime_config import ROOT, load_runtime_config
 
 
 def cells(ring: dict[str, list[int]]) -> set[tuple[int, int]]:
@@ -37,8 +40,20 @@ def cells(ring: dict[str, list[int]]) -> set[tuple[int, int]]:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("instance", type=Path)
-    parser.add_argument("--timeout", type=float, default=30.0)
+    parser.add_argument("--config", type=Path, default=ROOT / "config/default.json")
+    parser.add_argument("--timeout", type=float)
     args = parser.parse_args()
+    overrides = (
+        {"per_algorithm_timeout_seconds": args.timeout}
+        if args.timeout is not None else {}
+    )
+    try:
+        _, effective, _ = load_runtime_config(args.config, overrides)
+    except (OSError, ValueError) as error:
+        parser.error(str(error))
+    timeout = effective["per_algorithm_timeout_seconds"]
+    if timeout <= 0:
+        parser.error("IP coverage run requires a positive per_algorithm_timeout_seconds")
     instance = json.loads(args.instance.read_text())
     boundary = instance["region_to_cover"]["outer_boundary"]
     width = max(boundary["x"]) - min(boundary["x"])
@@ -79,11 +94,27 @@ def main() -> int:
         lines += ["Binary", " " + " ".join(f"x{i}" for i in range(len(anchors))),
                   "End"]
         lp.write_text("\n".join(lines) + "\n")
-        command = ["gurobi_cl", f"TimeLimit={args.timeout}", f"ResultFile={sol}", str(lp)]
-        completed = subprocess.run(command, capture_output=True, text=True, check=False)
-        if completed.returncode != 0 or not sol.exists():
-            print("FAILED\t" + completed.stderr.strip().replace("\n", " "))
-            return 0
+        command = ["gurobi_cl", f"TimeLimit={timeout}", f"ResultFile={sol}", str(lp)]
+        try:
+            return_code, stdout, stderr, limit_error, metrics = (
+                run_bounded_process_with_metrics(
+                    command, timeout, effective["memory_limit_mib"]
+                )
+            )
+        except OSError as error:
+            print(f"FAILED\tcould not start Gurobi: {error}", file=sys.stderr)
+            return 1
+        print("RESOURCE\t" + json.dumps(metrics, sort_keys=True))
+        if limit_error:
+            print("FAILED\t" + limit_error.replace("\n", " "), file=sys.stderr)
+            return 1
+        if return_code != 0 or not sol.is_file():
+            print(
+                "FAILED\t" +
+                (stderr or stdout).strip().replace("\n", " "),
+                file=sys.stderr,
+            )
+            return 1
         selected = sum(
             line.startswith("x") and line.rstrip().endswith("1")
             for line in sol.read_text().splitlines()
