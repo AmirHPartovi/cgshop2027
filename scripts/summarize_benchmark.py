@@ -378,7 +378,15 @@ def _tier_summaries(
             ]
             summary["median_ratio_to_best_known_feasible"] = _median(ratios)
             summary["mean_ratio_to_best_known_feasible"] = _mean(ratios)
+            summary["geometric_mean_ratio_to_best_known_feasible"] = (
+                _geometric_mean(ratios)
+            )
             summary["quality_ratio_trial_denominator"] = len(ratios)
+            summary["valid_instance_coverage"] = len(best_for_instance)
+            summary["instance_coverage_rate"] = (
+                len(best_for_instance) / summary["attempted_instances"]
+                if summary["attempted_instances"] else None
+            )
             result[tier][algorithm] = summary
     return result
 
@@ -812,6 +820,92 @@ def build_artifacts(
     }, indent=2, sort_keys=True, allow_nan=False) + "\n"
     artifacts["benchmark-summary.md"] = _summary_markdown(rows, summaries, references)
 
+    best_fields = (
+        "instance_uid", "tier", "status", "best_known_feasible_makespan",
+        "algorithm_id", "actual_producing_algorithm", "candidate_source",
+        "seed", "repetition", "input_path", "output_solution_path",
+        "validation_level", "wall_seconds", "child_process_tree_cpu_seconds",
+        "peak_process_tree_rss_bytes", "trial_status",
+    )
+    best_lines = ["\t".join(best_fields)]
+    for uid in sorted({str(row["instance_uid"]) for row in rows}):
+        instance_rows = [row for row in rows if str(row["instance_uid"]) == uid]
+        valid_rows = [row for row in instance_rows if _valid(row)]
+        valid_rows.sort(key=lambda row: (
+            float(row["makespan"]),
+            str(row["algorithm_id"]),
+            int(row.get("repetition") or 0),
+            str(row.get("seed") if row.get("seed") is not None else ""),
+            str(row.get("run_id") or ""),
+        ))
+        if valid_rows:
+            best = valid_rows[0]
+            values = [
+                uid, _tier(best), "BEST_KNOWN_FEASIBLE", best["makespan"],
+                best["algorithm_id"], best.get("actual_producing_algorithm"),
+                best.get("candidate_source"), best.get("seed"),
+                best.get("repetition"), best.get("input_path"),
+                best.get("output_solution_path"), best.get("validation_level"),
+                best.get("wall_seconds"),
+                best.get("child_process_tree_cpu_seconds"),
+                best.get("peak_process_tree_rss_bytes"),
+                best.get("trial_status"),
+            ]
+        else:
+            row = instance_rows[0]
+            values = [
+                uid, _tier(row), "NO_VALID_SOLUTION", None, None, None, None,
+                None, None, row.get("input_path"), None, None, None, None, None,
+                ",".join(sorted({
+                    str(item.get("trial_status", item.get("status", "ERROR")))
+                    for item in instance_rows
+                })),
+            ]
+        best_lines.append("\t".join(_cell(value) for value in values))
+    artifacts["best-heuristic-per-instance.tsv"] = "\n".join(best_lines) + "\n"
+
+    tier_fields = (
+        "tier", "rank", "winner", "algorithm_id", "attempted_trials",
+        "attempted_instances", "valid_feasible_solutions",
+        "valid_instance_coverage", "instance_coverage_rate",
+        "feasible_solution_rate",
+        "median_ratio_to_best_known_feasible",
+        "geometric_mean_ratio_to_best_known_feasible",
+        "timeout_rate", "error_rate", "median_valid_wall_seconds",
+        "median_valid_peak_memory_bytes",
+    )
+    tier_lines = ["\t".join(tier_fields)]
+    for tier in ("LIGHT", "MEDIUM", "HEAVY"):
+        tier_algorithms = tiers.get(tier, {})
+        ordered = sorted(tier_algorithms.items(), key=lambda item: (
+            -(item[1]["feasible_solution_rate"] or 0),
+            item[1]["geometric_mean_ratio_to_best_known_feasible"]
+            if item[1]["geometric_mean_ratio_to_best_known_feasible"] is not None
+            else float("inf"),
+            item[1]["median_ratio_to_best_known_feasible"]
+            if item[1]["median_ratio_to_best_known_feasible"] is not None
+            else float("inf"),
+            item[1]["timeout_rate"]
+            if item[1]["timeout_rate"] is not None else float("inf"),
+            item[1]["error_rate"]
+            if item[1]["error_rate"] is not None else float("inf"),
+            item[0],
+        ))
+        for rank, (algorithm, summary) in enumerate(ordered, 1):
+            tier_lines.append("\t".join(_cell(value) for value in [
+                tier, rank, rank == 1, algorithm,
+                summary["attempted_trials"], summary["attempted_instances"],
+                summary["valid_feasible_solutions"],
+                summary["valid_instance_coverage"], summary["instance_coverage_rate"],
+                summary["feasible_solution_rate"],
+                summary["median_ratio_to_best_known_feasible"],
+                summary["geometric_mean_ratio_to_best_known_feasible"],
+                summary["timeout_rate"], summary["error_rate"],
+                summary["median_valid_wall_seconds"],
+                summary["median_valid_peak_memory_bytes"],
+            ]))
+    artifacts["best-heuristic-by-tier.tsv"] = "\n".join(tier_lines) + "\n"
+
     matrix_rows = []
     for uid in instances:
         selected = [row for row in rows if str(row["instance_uid"]) == uid]
@@ -1037,16 +1131,23 @@ def build_artifacts(
             "Tier is an instance workload classification; missing tiers are UNKNOWN.",
             "",
             _markdown_table(
-                ["Algorithm ID", "Valid / attempted", "Feasible rate",
+                ["Algorithm ID", "Valid / attempted", "Instance coverage",
+                 "Feasible rate",
                  "Median makespan", "Mean makespan", "Ratio instances",
-                 "Median ratio to best feasible",
+                 "Median / geometric mean ratio to best feasible",
                  "Timeout rate", "Median wall (s)", "Median peak RSS (bytes)"],
                 [[algorithm,
                   f"{summary['valid_feasible_solutions']} / {summary['attempted_trials']}",
+                  f"{summary['valid_instance_coverage']} / {summary['attempted_instances']}",
                   summary["feasible_solution_rate"], summary["median_makespan"],
                   summary["mean_makespan"],
                   summary["quality_ratio_trial_denominator"],
-                  summary["median_ratio_to_best_known_feasible"],
+                  " / ".join(
+                      _cell(summary[key]) for key in (
+                          "median_ratio_to_best_known_feasible",
+                          "geometric_mean_ratio_to_best_known_feasible",
+                      )
+                  ),
                   summary["timeout_rate"], summary["median_wall_seconds"],
                   summary["median_peak_memory_bytes"]]
                  for algorithm, summary in sorted(by_algorithm.items())],

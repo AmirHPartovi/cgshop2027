@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import csv
 import hashlib
 import json
 import os
@@ -114,6 +115,59 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def read_instance_manifest(path: Path) -> list[dict[str, str]]:
+    dataset_root = (ROOT / "data/instances").resolve()
+    entries: list[dict[str, str]] = []
+    seen_paths: set[Path] = set()
+    seen_uids: set[str] = set()
+    with path.open(newline="", encoding="utf-8") as source:
+        reader = csv.DictReader(source, delimiter="\t")
+        required = {
+            "instance_uid", "relative_source_path", "sha256", "tier",
+            "classification_method", "classification_version",
+        }
+        if not reader.fieldnames or not required.issubset(reader.fieldnames):
+            raise ValueError("instance manifest is missing required columns")
+        for line_number, row in enumerate(reader, 2):
+            uid = row["instance_uid"].strip()
+            relative = row["relative_source_path"].strip()
+            tier = row["tier"].strip().upper()
+            source_path = (ROOT / relative).resolve()
+            try:
+                source_path.relative_to(dataset_root)
+            except ValueError as error:
+                raise ValueError(
+                    f"manifest line {line_number} is outside data/instances: {relative}"
+                ) from error
+            if not source_path.name.endswith(".instance.json"):
+                raise ValueError(
+                    f"manifest line {line_number} is not an instance JSON path: {relative}"
+                )
+            if tier not in {"LIGHT", "MEDIUM", "HEAVY"}:
+                raise ValueError(f"manifest line {line_number} has invalid tier {tier!r}")
+            if not uid or source_path in seen_paths or uid in seen_uids:
+                raise ValueError(
+                    f"manifest line {line_number} has an empty or duplicate UID/path"
+                )
+            if not source_path.is_file():
+                raise ValueError(f"manifest source does not exist: {relative}")
+            expected_hash = row["sha256"].strip().lower()
+            if file_sha256(source_path) != expected_hash:
+                raise ValueError(f"manifest SHA-256 mismatch: {relative}")
+            seen_paths.add(source_path)
+            seen_uids.add(uid)
+            entries.append({
+                **row,
+                "instance_uid": uid,
+                "relative_source_path": relative,
+                "tier": tier,
+                "resolved_path": str(source_path),
+            })
+    if not entries:
+        raise ValueError(f"instance manifest contains no entries: {path}")
+    return entries
+
+
 def source_fingerprint() -> str:
     digest = hashlib.sha256()
     sources = sorted(
@@ -145,7 +199,10 @@ def output_component(value: str) -> str:
 def trial_status(row: dict[str, Any]) -> str:
     if row.get("status") == "skipped_by_policy":
         return "SKIPPED_BY_POLICY"
-    if row.get("status") in {"time_limit", "global_deadline"}:
+    if row.get("status") in {"time_limit", "global_deadline"} and not (
+        row.get("solution_validity_status") == "VALID"
+        and row.get("timeout_incumbent_validated") is True
+    ):
         return "TIMEOUT_NO_SOLUTION"
     if row.get("status") == "official_time_limit":
         return "TIMEOUT_NO_SOLUTION"
@@ -154,7 +211,8 @@ def trial_status(row: dict[str, Any]) -> str:
     if row.get("status") != "ok":
         return "ERROR"
     if row.get("solver_execution_status") in {
-        "TIME_LIMIT_WITH_FEASIBLE_CANDIDATE", "TIME_LIMIT_WITH_INCUMBENT"
+        "TIME_LIMIT_WITH_FEASIBLE_CANDIDATE", "TIME_LIMIT_WITH_INCUMBENT",
+        "WALL_CLOCK_TIMEOUT_WITH_FEASIBLE_INCUMBENT",
     }:
         return "TIMEOUT_WITH_VALID_INCUMBENT"
     if row.get("official_validation_outcome") == "TIMEOUT":
@@ -289,6 +347,55 @@ def run_bounded_process_with_metrics(
         )
 
 
+def _recover_timeout_incumbent(
+    instance: Path, output: Path
+) -> dict[str, Any] | None:
+    """Accept a file left by an interrupted trial only after C++ validation."""
+    checker = ROOT / "build/bin/internal_solution_check"
+    if not output.is_file() or not checker.is_file() or not os.access(checker, os.X_OK):
+        return None
+    try:
+        solution = json.loads(output.read_text(encoding="utf-8"))
+        score = makespan(solution)
+        checked = subprocess.run(
+            [str(checker), str(instance), str(output)],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+        if checked.returncode != 0:
+            return None
+        result = json.loads(checked.stdout)
+        if result.get("instance_valid") is not True or result.get("solution_valid") is not True:
+            return None
+        if result.get("makespan") != score:
+            return None
+    except (
+        OSError, subprocess.SubprocessError, json.JSONDecodeError,
+        ValueError, KeyError, TypeError,
+    ):
+        return None
+    return {
+        "status": "ok",
+        "makespan": score,
+        "solution": str(output),
+        "validation_level": "internal_cpp",
+        "official_validated": False,
+        "official_validation_outcome": "NOT_REQUESTED",
+        "solution_validity_status": "VALID",
+        "feasible": True,
+        "timeout_incumbent_validated": True,
+        "solver_execution_status": "WALL_CLOCK_TIMEOUT_WITH_FEASIBLE_INCUMBENT",
+        "candidate_source": solution.get("meta", {}).get(
+            "candidate_source", "recovered_validated_incumbent"
+        ),
+        "algorithm_implementation": solution.get("meta", {}).get(
+            "algorithm_implementation"
+        ),
+    }
+
+
 def collect_benchmark_future(
     future: Future[dict[str, Any]], algorithm: str, repetition: int
 ) -> dict[str, Any]:
@@ -344,7 +451,8 @@ def run_one(
             row.get("status") in {"time_limit", "official_time_limit", "global_deadline"}
             or row.get("official_validation_outcome") == "TIMEOUT"
             or row.get("solver_execution_status") in {
-                "TIME_LIMIT_WITH_FEASIBLE_CANDIDATE", "TIME_LIMIT_WITH_INCUMBENT"
+                "TIME_LIMIT_WITH_FEASIBLE_CANDIDATE", "TIME_LIMIT_WITH_INCUMBENT",
+                "WALL_CLOCK_TIMEOUT_WITH_FEASIBLE_INCUMBENT",
             }
             or row.get("ip_kont_status") == "TIME_LIMIT_WITH_INCUMBENT"
             or row.get("termination_reason") in {
@@ -479,6 +587,18 @@ def run_one(
         status = "memory_limit" if "RSS exceeded" in limit_error else "time_limit"
         if "memory probe failed" in limit_error:
             status = "memory_probe_failed"
+        if status == "time_limit":
+            incumbent = _recover_timeout_incumbent(instance, output)
+            if incumbent is not None:
+                incumbent.update({
+                    "algorithm": algorithm,
+                    "repetition": repetition,
+                    "seconds": time.monotonic() - started,
+                    "error": limit_error,
+                    "config_report": str(run_report_path),
+                    **resource_metrics,
+                })
+                return finish(incumbent, stdout, stderr, returncode)
         return finish({
             "algorithm": algorithm, "repetition": repetition,
             "status": status, "seconds": time.monotonic() - started,
@@ -490,6 +610,17 @@ def run_one(
         timed_out = "deadline" in stderr.lower() or "timed out" in stderr.lower()
         if timed_out:
             resource_metrics["termination_reason"] = "cooperative_timeout"
+            incumbent = _recover_timeout_incumbent(instance, output)
+            if incumbent is not None:
+                incumbent.update({
+                    "algorithm": algorithm,
+                    "repetition": repetition,
+                    "seconds": time.monotonic() - started,
+                    "error": stderr.strip() or f"solver exited {returncode}",
+                    "config_report": str(run_report_path),
+                    **resource_metrics,
+                })
+                return finish(incumbent, stdout, stderr, returncode)
         return finish({
             "algorithm": algorithm, "repetition": repetition,
             "status": "time_limit" if timed_out else "failed",
@@ -763,6 +894,12 @@ def main() -> int:
     parser.add_argument("--instances", type=Path, default=ROOT / "data/test")
     parser.add_argument("--instance", type=Path,
                         help="run one explicitly selected instance")
+    parser.add_argument("--instance-manifest", type=Path,
+                        help="run exactly the source paths in a verified TSV manifest")
+    parser.add_argument(
+        "--instance-validation-timeout", type=float, default=300.0,
+        help="bounded seconds for each C++ instance preflight (default: 300)",
+    )
     parser.add_argument("--instance-ids",
                         help="comma-separated instance UIDs or filename stems")
     parser.add_argument("--output", type=Path)
@@ -787,6 +924,10 @@ def main() -> int:
     parser.set_defaults(overwrite=None)
     args = parser.parse_args()
 
+    if args.instance_manifest is not None and (
+        args.instance is not None or args.instance_ids
+    ):
+        parser.error("--instance-manifest cannot be combined with --instance or --instance-ids")
     if args.instance is not None and args.instance_ids:
         parser.error("--instance and --instance-ids cannot be combined")
     if args.algorithm and (args.algorithms or args.all_algorithms or args.auto_policy):
@@ -795,6 +936,8 @@ def main() -> int:
         parser.error("--all-algorithms cannot be combined with --algorithms or --auto-policy")
     if args.auto_policy and (args.algorithms or args.all_algorithms):
         parser.error("--auto-policy cannot be combined with --algorithms or --all-algorithms")
+    if args.instance_validation_timeout <= 0:
+        parser.error("--instance-validation-timeout must be positive")
 
     overrides: dict[str, Any] = {}
     if args.timeout is not None:
@@ -830,9 +973,22 @@ def main() -> int:
     solver = args.solver.resolve()
     if not solver.is_file() or not os.access(solver, os.X_OK):
         parser.error(f"solver executable not found or not executable: {solver}")
-    if args.instance is None and not args.instances.is_dir():
+    if (
+        args.instance_manifest is None and args.instance is None
+        and not args.instances.is_dir()
+    ):
         parser.error(f"instance directory does not exist: {args.instances}")
-    if args.instance is not None:
+    manifest_entries: list[dict[str, str]] = []
+    if args.instance_manifest is not None:
+        try:
+            manifest_entries = read_instance_manifest(args.instance_manifest.resolve())
+        except (OSError, ValueError) as error:
+            parser.error(f"cannot load instance manifest: {error}")
+        instances = [Path(item["resolved_path"]) for item in manifest_entries]
+        manifest_by_path = {
+            Path(item["resolved_path"]): item for item in manifest_entries
+        }
+    elif args.instance is not None:
         instances = [args.instance.resolve()]
         if not instances[0].is_file():
             parser.error(f"instance file does not exist: {instances[0]}")
@@ -840,7 +996,7 @@ def main() -> int:
         instances = sorted(args.instances.glob("*.instance.json"))
     selected_ids = (
         {item.strip() for item in args.instance_ids.split(",") if item.strip()}
-        if args.instance_ids else None
+        if args.instance_ids and args.instance_manifest is None else None
     )
     if args.instance_ids and not selected_ids:
         parser.error("--instance-ids must select at least one nonempty id")
@@ -860,6 +1016,11 @@ def main() -> int:
             if selected_ids is not None and filename_id not in selected_ids:
                 continue
             parser.error(f"instance has no string instance_uid: {path}")
+        manifest_entry = (
+            manifest_by_path.get(path) if args.instance_manifest is not None else None
+        )
+        if manifest_entry and value["instance_uid"] != manifest_entry["instance_uid"]:
+            parser.error(f"manifest UID does not match source input: {path}")
         instance_data[path] = value
     if selected_ids is not None:
         instances = [
@@ -913,7 +1074,7 @@ def main() -> int:
         parser.error(f"benchmark output directory is not writable: {output_dir}: {error}")
 
     validation_timeout = max(
-        30.0, effective["per_instance_timeout_seconds"],
+        args.instance_validation_timeout, effective["per_instance_timeout_seconds"],
         effective["per_algorithm_timeout_seconds"],
     )
     for path in instances:
@@ -951,11 +1112,31 @@ def main() -> int:
                 parser.error("global run deadline expired during instance classification")
             profile_features = extract_features(path)
             classification = classify(profile_features, thresholds)
+            manifest_entry = (
+                manifest_by_path.get(path)
+                if args.instance_manifest is not None else None
+            )
             instance_profiles[path] = {
-                "estimated_tier": classification["tier"],
-                "classification_reason": classification["reason"],
-                "classification_confidence": classification["confidence"],
-                "threshold_version": threshold_version,
+                "estimated_tier": (
+                    manifest_entry["tier"] if manifest_entry else classification["tier"]
+                ),
+                "classification_reason": (
+                    "dataset-relative workload tier from the verified instance manifest"
+                    if manifest_entry else classification["reason"]
+                ),
+                "classification_confidence": (
+                    "not calibrated" if manifest_entry else classification["confidence"]
+                ),
+                "threshold_version": (
+                    manifest_entry["classification_version"]
+                    if manifest_entry else threshold_version
+                ),
+                "classification_method": (
+                    manifest_entry["classification_method"] if manifest_entry else "fixed_thresholds"
+                ),
+                "classification_version": (
+                    manifest_entry["classification_version"] if manifest_entry else threshold_version
+                ),
                 "input_size_features": {
                     "region_cell_count": profile_features["region_cell_count"],
                     "boundary_vertices": profile_features["boundary_vertices"],
@@ -1003,6 +1184,12 @@ def main() -> int:
                 ))
     if len({task[4] for task in tasks}) != len(tasks):
         parser.error("selected trials produce colliding output paths")
+    print(
+        f"planned trials: {len(tasks)} across {len(instances)} manifest instances, "
+        f"{len(algorithms)} algorithms; jobs={effective['benchmark_jobs']}, "
+        f"timeout={min(effective['per_instance_timeout_seconds'], effective['per_algorithm_timeout_seconds']):g}s, "
+        f"memory={effective['memory_limit_mib']} MiB"
+    )
     if not effective["overwrite_existing"]:
         existing = [path for _, _, _, _, path in tasks
                     if (path.exists() or Path(str(path) + ".config.json").exists() or
@@ -1026,6 +1213,15 @@ def main() -> int:
         "effective": effective,
         "automatic_adjustments": adjustments,
         "selected_instance_paths": [str(path.resolve()) for path in instances],
+        "instance_manifest": (
+            str(args.instance_manifest.resolve())
+            if args.instance_manifest is not None else None
+        ),
+        "instance_manifest_sha256": (
+            file_sha256(args.instance_manifest.resolve())
+            if args.instance_manifest is not None else None
+        ),
+        "instance_validation_timeout_seconds": validation_timeout,
         "selected_algorithm_ids": [
             "auto-policy" if algorithm == "auto" else algorithm
             for algorithm in algorithms
@@ -1197,7 +1393,7 @@ def main() -> int:
               "effective_configuration",
               "validation_level", "official_validated", "candidate_kind",
               "official_validation_outcome", "solver_exit_code", "raw_exit_code",
-              "timeout_status", "error", "log_path",
+              "timeout_status", "timeout_incumbent_validated", "error", "log_path",
               "ilp_backend",
               "ip_kont_model", "ip_kont_status", "ip_kont_raw_status",
               "ip_kont_runtime_seconds", "ip_kont_process_exit_code",

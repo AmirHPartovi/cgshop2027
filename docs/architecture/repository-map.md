@@ -28,10 +28,10 @@
 | `.clang-format`, `.editorconfig` | LLVM-derived C++ formatting and UTF-8/LF/4-space defaults; shell scripts use 2-space indentation |
 | `.gitignore` | Ignores `build/`, local `.venv/` and `/.cache/`, benchmark JSON inputs under `data/instances/` and `data/test/`, and Python `__pycache__` directories |
 | `build/` | Existing local CMake cache, compile database, solver and test binaries; ignored by Git |
-| `.venv/` | Existing local Python environment; not a declared project dependency manifest |
+| `.venv/` | Local Python environment; `requirements-cgshop.txt` pins the official verifier dependency |
 | `.cache/clangd/` | Local clangd indexes; not application source |
 
-No `requirements.txt`, `pyproject.toml`, `conanfile`, or vcpkg manifest is present in the tracked tree.
+No general application `requirements.txt`, `pyproject.toml`, `conanfile`, or vcpkg manifest is present in the tracked tree; `requirements-cgshop.txt` is scoped to the official competition utilities.
 
 ## Build targets and external dependencies
 

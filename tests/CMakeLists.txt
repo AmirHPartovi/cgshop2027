@@ -74,6 +74,16 @@ if(Python3_Interpreter_FOUND)
                 $<TARGET_FILE:internal_solution_check>
     )
     add_test(
+        NAME official_pyutils_compat
+        COMMAND ${Python3_EXECUTABLE}
+                ${PROJECT_SOURCE_DIR}/tests/test_pyutils_compat.py
+    )
+    add_test(
+        NAME contest_instance_classification
+        COMMAND ${Python3_EXECUTABLE}
+                ${PROJECT_SOURCE_DIR}/tests/test_contest_instance_classification.py
+    )
+    add_test(
         NAME auto_solve_cli
         COMMAND ${Python3_EXECUTABLE}
                 ${PROJECT_SOURCE_DIR}/tests/test_auto_solve_cli.py

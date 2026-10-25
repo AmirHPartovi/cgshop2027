@@ -14,6 +14,24 @@ ctest --test-dir build --output-on-failure
 
 The solver executable is written to `build/bin/solver`.
 
+## Official Python verifier
+
+Use the pinned official utilities release in the existing local virtual
+environment. The dependency and verified parser, verifier, schema, archive,
+and visualization APIs are documented in
+[docs/cgshop-pyutils-dependency.md](docs/cgshop-pyutils-dependency.md).
+
+```sh
+.venv/bin/python -m pip install --upgrade -r requirements-cgshop.txt
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+  -DPython3_EXECUTABLE="$PWD/.venv/bin/python"
+cmake --build build --parallel
+ctest --test-dir build --output-on-failure
+```
+
+Configure CMake with `.venv/bin/python` so the official compatibility smoke
+test runs under the supported interpreter (Python 3.10 or newer).
+
 ## Usage
 
 ```sh
@@ -367,7 +385,7 @@ running stale solver binaries after moving or copying the repository.
 For official validation:
 
 ```sh
-python3 scripts/validate.py INSTANCE.instance.json SOLUTION.solution.json
+.venv/bin/python scripts/validate.py INSTANCE.instance.json SOLUTION.solution.json
 ```
 
 To benchmark the configured algorithm list concurrently:

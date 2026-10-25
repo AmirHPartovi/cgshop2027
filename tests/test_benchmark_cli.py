@@ -2,21 +2,49 @@
 """Integration tests for isolated benchmark selection and persisted trial rows."""
 
 import csv
+import hashlib
 import json
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
+import benchmark as benchmark_module  # noqa: E402
 from benchmark import trial_status  # noqa: E402
 from runtime_config import CANONICAL_ALGORITHMS, canonical_algorithm_id  # noqa: E402
 
 
 class BenchmarkCliTests(unittest.TestCase):
+    def test_manifest_input_is_hash_checked_and_scoped_to_contest_instances(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "data/instances/case.instance.json"
+            source.parent.mkdir(parents=True)
+            source.write_text('{"instance_uid":"case"}\n', encoding="utf-8")
+            digest = hashlib.sha256(source.read_bytes()).hexdigest()
+            manifest = root / "instance-manifest.tsv"
+            manifest.write_text(
+                "instance_uid\trelative_source_path\tsha256\ttier\t"
+                "classification_method\tclassification_version\n"
+                f"case\tdata/instances/case.instance.json\t{digest}\tLIGHT\t"
+                "relative_workload\ttest-v1\n",
+                encoding="utf-8",
+            )
+            with patch.object(benchmark_module, "ROOT", root):
+                entries = benchmark_module.read_instance_manifest(manifest)
+                self.assertEqual(entries[0]["instance_uid"], "case")
+                self.assertEqual(
+                    Path(entries[0]["resolved_path"]).resolve(), source.resolve()
+                )
+                source.write_text('{"instance_uid":"changed"}\n', encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "SHA-256 mismatch"):
+                    benchmark_module.read_instance_manifest(manifest)
+
     def test_canonical_registry_aliases_and_trial_statuses(self):
         self.assertEqual(canonical_algorithm_id("c2"), "connected-growth")
         self.assertEqual(canonical_algorithm_id("a1"), "boustrophedon")

@@ -78,7 +78,11 @@ class BenchmarkReportTests(unittest.TestCase):
         ]
 
     def test_invalid_solutions_are_excluded_and_timeout_incumbents_remain_feasible(self):
-        artifacts = build_artifacts(self.rows, Path("/raw/benchmark.tsv"))
+        rows = [
+            *self.rows,
+            record("r8", "case-z", "lns", "failed", "ERROR", None),
+        ]
+        artifacts = build_artifacts(rows, Path("/raw/benchmark.tsv"))
         metadata = json.loads(artifacts["report-metadata.json"])
         partition = next(
             row for row in metadata["summary_statistics"]
@@ -108,6 +112,13 @@ class BenchmarkReportTests(unittest.TestCase):
         self.assertTrue(artifacts["memory-ranking.tsv"])
         self.assertTrue(artifacts["run-type-ranking.tsv"])
         self.assertTrue(artifacts["budget-comparison.tsv"])
+        best_rows = artifacts["best-heuristic-per-instance.tsv"].splitlines()
+        self.assertEqual(len(best_rows), 5)
+        self.assertIn("BEST_KNOWN_FEASIBLE", best_rows[1])
+        self.assertIn("NO_VALID_SOLUTION", best_rows[-1])
+        tier_rows = artifacts["best-heuristic-by-tier.tsv"].splitlines()
+        self.assertTrue(tier_rows[0].startswith("tier\trank\twinner"))
+        self.assertIn("LIGHT\t1\ttrue", tier_rows[1])
         resource_rows = artifacts["resource-ranking.tsv"].splitlines()[1:]
         self.assertEqual(resource_rows[-1].split("\t")[1], "invalid-method")
         quality_rows = artifacts["quality-ranking.tsv"].splitlines()[1:]
@@ -189,6 +200,9 @@ class BenchmarkReportTests(unittest.TestCase):
         artifacts = build_artifacts(tiered_rows, Path("/raw/benchmark.tsv"))
         for tier in ("light", "medium", "heavy"):
             self.assertIn(f"# {tier.title()} tier", artifacts[f"tiers/{tier}.md"])
+        tier_ranking = artifacts["best-heuristic-by-tier.tsv"]
+        for tier in ("LIGHT", "MEDIUM", "HEAVY"):
+            self.assertIn(f"{tier}\t1\ttrue", tier_ranking)
 
     def test_quality_ratios_skip_zero_reference_and_missing_metrics(self):
         artifacts = build_artifacts([
@@ -258,6 +272,53 @@ class BenchmarkReportTests(unittest.TestCase):
         self.assertEqual(algorithm_summary["timeout_rate"], 1)
         self.assertEqual(algorithm_summary["official_validation_failure_count"], 1)
         self.assertEqual(algorithm_summary["officially_validated_solutions"], 0)
+
+    def test_interrupted_trial_recovers_only_cpp_validated_incumbent(self):
+        solver = ROOT / "build/bin/solver"
+        requested, effective, _ = load_runtime_config(overrides={
+            "algorithms": ["partition"],
+            "official_validation": False,
+        })
+        real_runner = benchmark_module.run_bounded_process_with_metrics
+        timeout_metrics = {
+            "wall_seconds": 0.1,
+            "child_process_tree_cpu_seconds": 0.1,
+            "peak_process_tree_rss_bytes": 1024,
+            "process_tree_rss_sample_count": 1,
+            "process_tree_cpu_sample_count": 1,
+            "termination_reason": "wall_clock_timeout",
+        }
+
+        def write_candidate_then_timeout(command, timeout, memory):
+            if Path(command[0]) == solver:
+                result = real_runner(command, timeout, memory)
+                self.assertIsNone(result[3])
+                return None, result[1], "wall-clock limit reached", \
+                    "wall-clock limit exceeded", timeout_metrics
+            return real_runner(command, timeout, memory)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = Path(temp_dir) / "incumbent.solution.json"
+            with patch.object(
+                benchmark_module,
+                "run_bounded_process_with_metrics",
+                side_effect=write_candidate_then_timeout,
+            ):
+                result = benchmark_module.run_one(
+                    solver,
+                    ROOT / "tests/fixtures/instances/tiny-square.instance.json",
+                    "partition",
+                    0,
+                    output,
+                    requested,
+                    effective,
+                    None,
+                )
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["trial_status"], "TIMEOUT_WITH_VALID_INCUMBENT")
+        self.assertEqual(result["validation_level"], "internal_cpp")
+        self.assertTrue(result["timeout_incumbent_validated"])
+        self.assertTrue(result["feasible"])
 
 
 if __name__ == "__main__":
