@@ -29,6 +29,7 @@ from runtime_config import (
 )
 from reference_comparison import compare_instance_results, comparison_tsv
 from solution_metrics import makespan
+from solver_result import read_solver_result
 
 
 def terminate_tree(process: subprocess.Popen[str]) -> None:
@@ -427,6 +428,7 @@ def run_one(
     started = time.monotonic()
     seed = requested["random_seed"] + repetition
     sidecar = Path(str(output) + ".config.json")
+    result_sidecar = Path(str(output) + ".result.json")
     run_report_path = Path(str(output) + ".run-config.json")
     def finish(
         row: dict[str, Any],
@@ -439,6 +441,18 @@ def run_one(
         row["stderr"] = stderr
         row["requested_algorithm"] = algorithm
         row["algorithm_id"] = canonical_algorithm_id(algorithm)
+        row["solver_mode"] = "heuristic"
+        if result_sidecar.is_file():
+            try:
+                contract = read_solver_result(result_sidecar)
+                row["solver_completion_status"] = contract["solver_completion_status"]
+                row["candidate_exists"] = contract["candidate_exists"]
+                row["internal_validation_status"] = contract["internal_validation_status"]
+                row["official_validation_status"] = contract["official_validation_status"]
+                row["optimality_proved"] = contract["optimality_proved"]
+                row["solver_termination_reason"] = contract["termination_reason"]
+            except ValueError as error:
+                row["solver_result_report_error"] = str(error)
         row["seed"] = seed
         row["requested_configuration"] = run_requested
         row["effective_configuration"] = run_effective
@@ -495,6 +509,7 @@ def run_one(
     run_effective = copy.deepcopy(effective)
     run_repetitions = 1
     run_effective["algorithms"] = [algorithm]
+    run_effective["solver_mode"] = "heuristic"
     run_effective["randomized_repetitions"] = run_repetitions
     run_effective["random_seed"] = seed
     run_effective["output_directory"] = str(output.parent)
@@ -554,6 +569,7 @@ def run_one(
         })
     command = [
         str(solver), "-i", str(instance), "-o", str(output),
+        "--mode", "heuristic",
         "--algorithm", algorithm,
         "--instance-timeout", str(run_effective["per_instance_timeout_seconds"]),
         "--algorithm-timeout", str(run_effective["per_algorithm_timeout_seconds"]),
@@ -634,6 +650,7 @@ def run_one(
         solution = json.loads(output.read_text(encoding="utf-8"))
         score = makespan(solution)
         report = json.loads(sidecar.read_text(encoding="utf-8"))
+        solver_result = read_solver_result(result_sidecar)
         kont_fields = _ip_kont_metadata(solution, algorithm)
     except (OSError, json.JSONDecodeError, ValueError, KeyError, TypeError) as error:
         return finish({
@@ -717,6 +734,11 @@ def run_one(
         "solver_execution_status": solution.get("meta", {}).get(
             "execution_status", "COMPLETED"
         ),
+        "solver_completion_status": solver_result["solver_completion_status"],
+        "internal_validation_status": solver_result["internal_validation_status"],
+        "official_validation_status": solver_result["official_validation_status"],
+        "optimality_proved": solver_result["optimality_proved"],
+        "solver_termination_reason": solver_result["termination_reason"],
         "algorithm_implementation": solution.get("meta", {}).get(
             "algorithm_implementation"
         ),
@@ -1379,7 +1401,7 @@ def main() -> int:
     fields = (
               "run_id", "instance_id", "instance_uid", "input_path",
               "input_fingerprint_sha256", "algorithm_id", "algorithm",
-              "requested_algorithm", "producing_algorithm",
+              "solver_mode", "requested_algorithm", "producing_algorithm",
               "actual_producing_algorithm", "repetition", "seed",
               "requested_configuration",
               "output_solution_path",
@@ -1406,7 +1428,11 @@ def main() -> int:
               "child_process_tree_cpu_seconds", "peak_process_tree_rss_bytes",
               "process_tree_rss_sample_count", "process_tree_cpu_sample_count",
               "termination_reason", "memory_enforcement",
-              "solver_execution_status", "candidate_source",
+              "solver_execution_status", "solver_completion_status",
+              "candidate_exists", "internal_validation_status",
+              "official_validation_status", "optimality_proved",
+              "solver_termination_reason", "solver_result_report_error",
+              "algorithm_implementation", "candidate_source",
               "official_wall_seconds", "official_child_process_tree_cpu_seconds",
               "official_peak_process_tree_rss_bytes",
               "official_process_tree_rss_sample_count",

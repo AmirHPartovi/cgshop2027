@@ -73,7 +73,7 @@ mkdir -p "$OUT_DIR"
 for instance in "$@"; do
     name=$(basename "$instance" .instance.json)
     output="$OUT_DIR/$name.solution.json"
-    "$SOLVER" -i "$instance" -o "$output" -a partition
+    "$SOLVER" -i "$instance" -o "$output" --mode heuristic -a partition
     if [ "$OFFICIAL" -eq 1 ]; then
         "$PYTHON" "$ROOT/scripts/validate.py" "$instance" "$output"
     fi

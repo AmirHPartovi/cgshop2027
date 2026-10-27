@@ -10,13 +10,15 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from runtime_config import load_runtime_config  # noqa: E402
+from runtime_config import CANONICAL_SOLVER_MODES, load_runtime_config  # noqa: E402
 
 
 class RuntimeConfigTests(unittest.TestCase):
     def test_defaults_are_loaded_from_central_file(self):
         requested, effective, adjustments = load_runtime_config()
         self.assertEqual(requested["per_algorithm_timeout_seconds"], 10.0)
+        self.assertEqual(requested["solver_mode"], "heuristic")
+        self.assertEqual(CANONICAL_SOLVER_MODES, ("heuristic", "ip-kont", "decompose"))
         self.assertEqual(requested["algorithm_parameters"]["lns_iterations"], 250)
         self.assertEqual(requested["algorithm_parameters"]["lns_max_anchors"], 5000)
         self.assertEqual(requested["algorithm_parameters"]["lns_max_move_anchors"], 16)
@@ -33,7 +35,10 @@ class RuntimeConfigTests(unittest.TestCase):
             requested, _, _ = load_runtime_config(
                 path, {"per_algorithm_timeout_seconds": 2.5}
             )
+            path.write_text(json.dumps({"solver_mode": "decompose"}))
+            mode_requested, _, _ = load_runtime_config(path)
         self.assertEqual(requested["per_algorithm_timeout_seconds"], 2.5)
+        self.assertEqual(mode_requested["solver_mode"], "decompose")
         self.assertEqual(requested["random_seed"], 18)
         self.assertEqual(requested["algorithm_parameters"]["tsp_max_anchors"], 3500)
 
@@ -43,8 +48,13 @@ class RuntimeConfigTests(unittest.TestCase):
             path.write_text('{"unknown": 1}')
             with self.assertRaisesRegex(ValueError, "unknown configuration key"):
                 load_runtime_config(path)
+            with self.assertRaisesRegex(ValueError, "solver_mode must be one of"):
+                load_runtime_config(overrides={"solver_mode": "ilp"})
             path.write_text('{"difficulty_tier_filter": ["easy"]}')
             with self.assertRaisesRegex(ValueError, "validated tier classifier"):
+                load_runtime_config(path)
+            path.write_text('{"heuristic_portfolio": ["ilp"]}')
+            with self.assertRaisesRegex(ValueError, "unsupported or duplicate"):
                 load_runtime_config(path)
 
     def test_threads_and_invalid_timeout_fail(self):

@@ -14,6 +14,7 @@
 #include "algorithms/StripAlgorithm.h"
 #include "algorithms/TspCovAlgorithm.h"
 #include "algorithms/TourConstruction.h"
+#include "core/SolverResult.h"
 #include "io/InstanceReader.h"
 
 #include <algorithm>
@@ -259,14 +260,58 @@ int main() {
                 "single-route algorithms must disclose stationary cutter padding");
 
         FallbackProbe fallbackProbe(twoCutters);
-        const auto fallback = fallbackProbe.solve(1.0);
-        require(fallback.validate(twoCutters) &&
-                     fallback.meta.at("requested_algorithm") == "fallback-probe" &&
-                     fallback.meta.at("algorithm_implementation") == "partition" &&
-                     fallback.meta.at("candidate_source") == "partition_fallback" &&
-                     fallback.meta.at("fallback_algorithm") == "partition" &&
-                     !fallback.meta.at("fallback_reason").empty(),
-                "invalid candidate fallback must be valid and carry truthful metadata");
+        bool invalidCandidateRejected = false;
+        try {
+            (void)fallbackProbe.solve(1.0);
+        } catch (const std::runtime_error& error) {
+            invalidCandidateRejected =
+                std::string(error.what()).find("produced an invalid candidate") !=
+                std::string::npos;
+        }
+        require(invalidCandidateRejected,
+                "invalid algorithm candidate must fail rather than silently become a partition result");
+
+        cgshop2027::SolverResult unavailable;
+        unavailable.completion = cgshop2027::SolverCompletionStatus::Unavailable;
+        unavailable.terminationReason = "exact route model is not implemented";
+        const std::string unavailableJson = unavailable.toJson();
+        require(unavailableJson.find("\"candidate_exists\": false") !=
+                    std::string::npos &&
+                    unavailableJson.find("\"solver_completion_status\": \"unavailable\"") !=
+                    std::string::npos &&
+                    unavailableJson.find("\"optimality_proved\": false") !=
+                    std::string::npos,
+                "unavailable exact mode must not be serialized as an incumbent or proof");
+
+        cgshop2027::SolverResult invalidTimeoutResult;
+        invalidTimeoutResult.completion =
+            cgshop2027::SolverCompletionStatus::TimedOutWithIncumbent;
+        bool inconsistentStatusRejected = false;
+        try {
+            invalidTimeoutResult.validate();
+        } catch (const std::runtime_error&) {
+            inconsistentStatusRejected = true;
+        }
+        require(inconsistentStatusRejected,
+                "timed-out-with-incumbent status must require a validated incumbent");
+        cgshop2027::SolverResult timedOutIncumbent;
+        timedOutIncumbent.candidate =
+            cgshop2027::PartitioningAlgorithm(twoCutters).solve(1.0);
+        timedOutIncumbent.internalValidation =
+            cgshop2027::CandidateValidationStatus::Passed;
+        timedOutIncumbent.completion =
+            cgshop2027::SolverCompletionStatus::TimedOutWithIncumbent;
+        timedOutIncumbent.algorithmImplementation = "partition";
+        timedOutIncumbent.candidateSource = "partition_fallback";
+        timedOutIncumbent.terminationReason = "deadline with retained incumbent";
+        timedOutIncumbent.validate();
+        require(timedOutIncumbent.toJson().find(
+                    "\"solver_completion_status\": \"timed_out_with_incumbent\"") !=
+                    std::string::npos &&
+                    timedOutIncumbent.toJson().find(
+                        "\"candidate_source\": \"partition_fallback\"") !=
+                        std::string::npos,
+                "timeout incumbent status must preserve its actual candidate provenance");
 
         bool excessGroupsRejected = false;
         try {
@@ -489,9 +534,21 @@ int main() {
                                .solve(1.0);
                        },
                        passed);
+        const auto hybridResult = cgshop2027::HybridSolver(*multi).solve(1.0);
         checkAlgorithm("hybrid", *multi,
-                       [&] { return cgshop2027::HybridSolver(*multi).solve(1.0); },
-                       passed);
+                       [&] { return hybridResult; }, passed);
+        require(hybridResult.meta.count("portfolio_selected_algorithm") == 1U &&
+                    hybridResult.meta.count("candidate_source") == 1U &&
+                    hybridResult.meta.count("candidate_generation_order") == 1U,
+                "hybrid must preserve selected-builder and candidate provenance");
+        if (hybridResult.meta.at("candidate_source") == "hybrid_lns_improvement") {
+            require(hybridResult.meta.at("algorithm_implementation") == "hybrid",
+                    "an LNS improvement must name hybrid as the actual producer");
+        } else {
+            require(hybridResult.meta.at("candidate_source") ==
+                        hybridResult.meta.at("algorithm_implementation"),
+                    "a constructive candidate must retain its actual producer");
+        }
 
         require(passed == 15U,
                 "expected all 15 registered algorithm implementations to run");

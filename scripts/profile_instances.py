@@ -308,6 +308,7 @@ def run_pilot(
 ) -> dict[str, Any]:
     command = [
         str(solver), "-i", str(instance), "-o", str(output),
+        "--mode", "heuristic",
         "--algorithm", algorithm,
         "--instance-timeout", str(timeout),
         "--algorithm-timeout", str(timeout),

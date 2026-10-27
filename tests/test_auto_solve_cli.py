@@ -61,6 +61,56 @@ class AutoSolveCliTests(unittest.TestCase):
             self.assertIn("no mathematically exact solver", result.stderr)
             self.assertFalse(output.exists())
 
+    def test_unavailable_public_mode_writes_typed_result_without_fallback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "exact.solution.json"
+            result = subprocess.run(
+                [
+                    str(RUNNER_PYTHON), str(ROOT / "scripts/auto_solve.py"),
+                    "--instance", str(INSTANCE), "--output", str(output),
+                    "--mode", "ip-kont", "--solver", str(SOLVER),
+                ],
+                capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(result.returncode, 1, result.stderr)
+            report = json.loads(
+                Path(str(output) + ".selection.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(report["solver_result"]["solver_completion_status"],
+                             "unavailable")
+            self.assertFalse(report["solver_result"]["candidate_exists"])
+            self.assertFalse(report["solver_result"]["optimality_proved"])
+            self.assertFalse(output.exists())
+
+    def test_decompose_mode_requires_official_validation_before_publishing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "decompose.solution.json"
+            result = subprocess.run(
+                [
+                    str(RUNNER_PYTHON), str(ROOT / "scripts/auto_solve.py"),
+                    "--instance", str(INSTANCE), "--output", str(output),
+                    "--mode", "decompose", "--solver", str(SOLVER),
+                ],
+                capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            report = json.loads(
+                Path(str(output) + ".selection.json").read_text(encoding="utf-8")
+            )
+            solution = json.loads(output.read_text(encoding="utf-8"))
+            solver_result = json.loads(
+                Path(str(output) + ".result.json").read_text(encoding="utf-8")
+            )
+            self.assertTrue(output.is_file())
+            self.assertEqual(
+                solver_result["solver_completion_status"], "feasible_not_proven"
+            )
+            self.assertEqual(solver_result["official_validation_status"], "passed")
+            self.assertFalse(solver_result["optimality_proved"])
+            self.assertEqual(report["official_validation"]["status"], "ok")
+            self.assertFalse(report["solver_result"]["optimality_proved"])
+            self.assertIn("decomposition_partition_features", solution["meta"])
+
     def test_auto_runs_its_tier_portfolio_and_selects_official_candidate(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "auto.solution.json"
@@ -88,6 +138,34 @@ class AutoSolveCliTests(unittest.TestCase):
             )
             self.assertEqual(report["selection"]["selected_candidate_kind"], "heuristic")
             self.assertTrue(report["selection"]["official_validated"])
+
+    def test_public_heuristic_mode_runs_the_hybrid_solver_once(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "heuristic.solution.json"
+            result = subprocess.run(
+                [
+                    str(RUNNER_PYTHON), str(ROOT / "scripts/auto_solve.py"),
+                    "--instance", str(INSTANCE), "--output", str(output),
+                    "--mode", "heuristic", "--solver", str(SOLVER),
+                ],
+                capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            report = json.loads(
+                Path(str(output) + ".selection.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(report["effective"]["algorithms_to_run"], ["hybrid"])
+            self.assertEqual(report["algorithms_actually_executed"], ["hybrid"])
+            self.assertEqual(report["selection"]["selected_algorithm"], "hybrid")
+            self.assertTrue(report["selection"]["official_validated"])
+            solution = json.loads(output.read_text(encoding="utf-8"))
+            self.assertIn(
+                solution["meta"]["algorithm_implementation"],
+                {"partition", "frederickson", "mstc", "hybrid"},
+            )
+            self.assertIn(solution["meta"]["candidate_source"], {
+                "partition", "frederickson", "mstc", "hybrid_lns_improvement",
+            })
 
 
 if __name__ == "__main__":

@@ -13,7 +13,7 @@ from profile_instances import (
     extract_features,
     load_thresholds,
 )
-from runtime_config import ALGORITHMS, ROOT
+from runtime_config import ALGORITHMS, CANONICAL_SOLVER_MODES, ROOT
 
 
 DEFAULT_POLICY = ROOT / "config/auto_policy.json"
@@ -26,12 +26,18 @@ def load_auto_policy(path: Path = DEFAULT_POLICY) -> dict[str, Any]:
     except (OSError, json.JSONDecodeError) as error:
         raise ValueError(f"cannot read auto policy {path}: {error}") from error
     expected = {
-        "policy_version", "exact_model", "tier_policies", "ip_kont_surrogate_probe"
+        "policy_version", "public_mode_dispatch", "exact_model", "tier_policies",
+        "ip_kont_surrogate_probe"
     }
     if not isinstance(config, dict) or set(config) != expected:
         raise ValueError("auto policy must define policy_version, exact_model, tier_policies, and ip_kont_surrogate_probe")
     if not isinstance(config["policy_version"], str) or not config["policy_version"]:
         raise ValueError("policy_version must be a nonempty string")
+    mode_dispatch = config["public_mode_dispatch"]
+    if (not isinstance(mode_dispatch, dict) or
+            set(mode_dispatch) != set(CANONICAL_SOLVER_MODES) or
+            any(not isinstance(value, str) or not value for value in mode_dispatch.values())):
+        raise ValueError("public_mode_dispatch must define every canonical solver mode")
     exact = config["exact_model"]
     if not isinstance(exact, dict) or set(exact) != {
         "available_for_original_closed_tour_objective", "method", "light_budget_seconds"
@@ -84,6 +90,67 @@ def load_auto_policy(path: Path = DEFAULT_POLICY) -> dict[str, Any]:
             "enabled IP-KONT probe requires positive estimated-column cap and budget"
         )
     return config
+
+
+def build_mode_plan(
+    mode: str,
+    instance_path: Path,
+    thresholds_path: Path = DEFAULT_THRESHOLDS,
+    policy_path: Path = DEFAULT_POLICY,
+) -> dict[str, Any]:
+    """Resolve a public solver mode without treating unavailable backends as algorithms."""
+    if mode not in CANONICAL_SOLVER_MODES:
+        raise ValueError(
+            f"unsupported solver mode {mode!r}; expected " +
+            ", ".join(CANONICAL_SOLVER_MODES)
+        )
+    policy = load_auto_policy(policy_path)
+    if mode == "heuristic":
+        plan = build_plan(
+            instance_path,
+            thresholds_path=thresholds_path,
+            policy_path=policy_path,
+            requested_policy="heuristic",
+        )
+        plan["solver_mode"] = mode
+        plan["algorithms_to_run"] = ["hybrid"]
+        plan["selection_reason"] = (
+            "single bounded HybridSolver portfolio with validated incumbent "
+            "preservation and LNS improvement"
+        )
+        return plan
+    if mode == "decompose":
+        return {
+            "solver_mode": mode,
+            "requested_policy": mode,
+            "algorithms_to_run": ["decompose"],
+            "solver_completion_status": "feasible_not_proven",
+            "mode_available": True,
+            "mode_dispatch": policy["public_mode_dispatch"][mode],
+            "decomposition_exact": False,
+            "decomposition_local_exact": False,
+            "decomposition_status": "heuristic",
+            "selection_reason": (
+                "adaptive target-cell partitioning with heuristic local route "
+                "options and globally validated connector-aware merging"
+            ),
+        }
+    unavailable = {
+        "solver_mode": mode,
+        "requested_policy": mode,
+        "algorithms_to_run": [],
+        "solver_completion_status": "unavailable",
+        "mode_available": False,
+        "mode_dispatch": policy["public_mode_dispatch"][mode],
+    }
+    if mode == "ip-kont":
+        unavailable.update({
+            "exact_method_available": False,
+            "exact_method_status": "unavailable",
+            "exact_method_reason":
+                "the verified exact closed-tour IP-KONT model is not implemented",
+        })
+    return unavailable
 
 
 def _seconds(value: Any, allow_zero: bool) -> bool:
@@ -159,6 +226,7 @@ def build_plan(
             )
     tier_timeout = policy["tier_policies"][tier_name]["per_algorithm_timeout_seconds"]
     return {
+        "solver_mode": "heuristic",
         "requested_policy": mode,
         "requested_algorithm": forced_algorithm,
         "estimated_tier": tier_name,

@@ -24,6 +24,14 @@ target_link_libraries(test_execution_control PRIVATE cgshop_core)
 target_compile_options(test_execution_control PRIVATE -UNDEBUG)
 add_test(NAME execution_control COMMAND test_execution_control)
 
+add_executable(test_decomposition test_decomposition.cpp)
+target_link_libraries(test_decomposition PRIVATE cgshop_core)
+target_compile_options(test_decomposition PRIVATE -UNDEBUG)
+target_compile_definitions(test_decomposition PRIVATE
+    CGSHOP_TEST_FIXTURE_DIR="${PROJECT_SOURCE_DIR}/tests/fixtures"
+)
+add_test(NAME decomposition COMMAND test_decomposition)
+
 add_executable(internal_solution_check internal_solution_check.cpp)
 target_link_libraries(internal_solution_check PRIVATE cgshop_core)
 target_compile_options(internal_solution_check PRIVATE -UNDEBUG)
@@ -37,6 +45,10 @@ if(Python3_Interpreter_FOUND)
     add_test(
         NAME runtime_config
         COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/test_runtime_config.py
+    )
+    add_test(
+        NAME solver_result
+        COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/test_solver_result.py
     )
     add_test(
         NAME instance_profiler
@@ -77,6 +89,12 @@ if(Python3_Interpreter_FOUND)
         NAME official_pyutils_compat
         COMMAND ${Python3_EXECUTABLE}
                 ${PROJECT_SOURCE_DIR}/tests/test_pyutils_compat.py
+    )
+    add_test(
+        NAME decomposition_official
+        COMMAND ${Python3_EXECUTABLE}
+                ${PROJECT_SOURCE_DIR}/tests/test_decomposition_official.py
+                $<TARGET_FILE:test_decomposition>
     )
     add_test(
         NAME contest_instance_classification

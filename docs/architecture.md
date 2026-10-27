@@ -2,12 +2,13 @@
 
 ## Runtime flow
 
-`src/main.cpp` is the executable entry point and algorithm registry. It parses
-the input/output paths, algorithm name, and optional time limit; reads the
-instance; constructs the selected algorithm; validates the returned solution
-with `Solution::validate`; and writes it only after that check succeeds.
-Algorithm names and aliases are selected in a hard-coded conditional chain in
-`main.cpp`, not through a separate plugin or registration mechanism.
+`src/main.cpp` is the executable entry point and legacy heuristic-component
+registry. The public modes are `heuristic`, `ip-kont`, and `decompose`, from
+`config/solver_modes.json`; the C++ runtime and Python runners validate against
+that shared registry. `heuristic` currently dispatches to the hybrid solver.
+The other modes return a typed `unavailable` result without invoking a
+heuristic or writing a candidate. Legacy `--algorithm` names and aliases remain
+as heuristic-component overrides for batch experiments.
 
 ## Module map
 
@@ -25,11 +26,12 @@ Algorithm names and aliases are selected in a hard-coded conditional chain in
   rectilinear tour-length and makespan calculations, timeout checking, and
   solution assembly. Missing cutter routes are stationary at the instance's
   cutter center, duplicate consecutive/explicit closing points are normalized,
-  and excess route groups are rejected. Algorithm candidates are validated
-  before return; invalid candidates use a logged, metadata-marked partition
-  fallback, while an invalid partition result is an explicit failure.
-  Requested algorithm, actual implementation, and candidate source remain
-  separate metadata. `src/core/ExecutionControl` supplies the shared
+  and excess route groups are rejected. `finishCandidate` rejects invalid
+  candidates; only the heuristic orchestration boundary can choose a partition
+  fallback. Requested algorithm, actual implementation, and candidate source
+  remain separate metadata. `src/core/SolverResult` defines typed validation,
+  completion, and optimality statuses and writes a sibling result report.
+  `src/core/ExecutionControl` supplies the shared
   monotonic deadline and cancellation checkpoints used by geometry,
   construction, validation, hybrid incumbent retention, and KONT child cleanup.
   The CLI reserves a finalization window and distinguishes a timeout fallback

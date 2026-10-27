@@ -17,6 +17,7 @@ RuntimeConfig activeConfig;
 constexpr double kMaximumTimeoutSeconds = 31536000.0;
 
 const std::set<std::string> kConfigKeys{
+    "solver_mode",
     "global_run_deadline_seconds",
     "per_instance_timeout_seconds",
     "per_algorithm_timeout_seconds",
@@ -98,6 +99,13 @@ void applyJson(RuntimeConfig& config, const json::Value& root) {
             throw std::runtime_error(std::string(key) + " must be null or nonnegative");
         }
     };
+    const auto mode = root.object.find("solver_mode");
+    if (mode != root.object.end()) {
+        if (mode->second.type != json::Value::STRING) {
+            throw std::runtime_error("solver_mode must be a string");
+        }
+        config.solverMode = mode->second.string;
+    }
     setTimeout("global_run_deadline_seconds", config.globalRunDeadlineSeconds, true);
     setTimeout("per_instance_timeout_seconds", config.perInstanceTimeoutSeconds, false);
     setTimeout("per_algorithm_timeout_seconds", config.perAlgorithmTimeoutSeconds, false);
@@ -207,6 +215,8 @@ std::string fieldsJson(const RuntimeConfig& config) {
                                      ? "null"
                                      : std::to_string(config.globalRunDeadlineSeconds);
     return "{"
+           "\"solver_mode\":" + quote(config.solverMode) +
+           ","
            "\"global_run_deadline_seconds\":" + deadline +
            ",\"per_instance_timeout_seconds\":" +
            std::to_string(config.perInstanceTimeoutSeconds) +
@@ -273,6 +283,29 @@ RuntimeConfig RuntimeConfig::load(const std::string& configPath) {
 }
 
 void RuntimeConfig::validate() const {
+    const auto modeConfig = json::parseFile(CGSHOP_SOLVER_MODES_CONFIG);
+    if (modeConfig.type != json::Value::OBJECT ||
+        modeConfig.object.count("canonical_modes") == 0U) {
+        throw std::runtime_error("solver mode registry is malformed");
+    }
+    const auto& modes = modeConfig.object.at("canonical_modes");
+    if (modes.type != json::Value::ARRAY) {
+        throw std::runtime_error("solver mode registry canonical_modes must be an array");
+    }
+    bool recognizedMode = false;
+    std::set<std::string> registeredModes;
+    for (const auto& mode : modes.array) {
+        if (mode.type != json::Value::STRING || mode.string.empty()) {
+            throw std::runtime_error("solver mode registry contains an invalid mode");
+        }
+        if (!registeredModes.insert(mode.string).second) {
+            throw std::runtime_error("solver mode registry contains duplicate modes");
+        }
+        recognizedMode = recognizedMode || mode.string == solverMode;
+    }
+    if (!recognizedMode) {
+        throw std::runtime_error("unsupported solver mode: " + solverMode);
+    }
     const auto validTimeout = [](double value) {
         return std::isfinite(value) && value >= 0.0 &&
                value <= kMaximumTimeoutSeconds;
@@ -338,7 +371,7 @@ void RuntimeConfig::validate() const {
     }
     static const std::set<std::string> portfolioNames{
         "boustrophedon", "stc", "frederickson", "mstc", "region-partition",
-        "ilp", "connected-growth", "column-gen", "tsp-cov"};
+        "connected-growth", "column-gen", "tsp-cov"};
     if (heuristicPortfolio.empty()) {
         throw std::runtime_error("heuristic_portfolio must not be empty");
     }

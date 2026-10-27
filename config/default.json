@@ -1,4 +1,5 @@
 {
+  "solver_mode": "heuristic",
   "global_run_deadline_seconds": null,
   "per_instance_timeout_seconds": 10.0,
   "per_algorithm_timeout_seconds": 10.0,
@@ -20,14 +21,8 @@
   "exact_solver_max_candidates": 0,
   "exact_solver_exploratory_time_budget_seconds": 0.0,
   "heuristic_portfolio": [
-    "boustrophedon",
-    "stc",
     "frederickson",
-    "mstc",
-    "region-partition",
-    "ilp",
-    "connected-growth",
-    "tsp-cov"
+    "mstc"
   ],
   "randomized_repetitions": 1,
   "output_directory": "build/results",

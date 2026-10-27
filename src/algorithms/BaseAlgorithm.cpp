@@ -1,5 +1,4 @@
 #include "algorithms/BaseAlgorithm.h"
-#include "algorithms/PartitioningAlgorithm.h"
 #include "core/ExecutionControl.h"
 #include "utils/Logger.h"
 
@@ -118,37 +117,20 @@ Solution BaseAlgorithm::makeSolution(const Problem& problem,
 Solution BaseAlgorithm::finishCandidate(
     Solution candidate, const std::string& algorithm, double timeoutSeconds,
     const std::string& routeAssignmentScope) const {
+    (void)timeoutSeconds;
     std::string validationError;
     if (!candidate.validate(problem_, &validationError)) {
-        if (algorithm == "partition") {
-            throw std::runtime_error(
-                "partition construction produced an invalid solution: " +
-                validationError);
-        }
-        Logger::instance().warning(
-            "algorithm." + algorithm,
-            "candidate rejected; falling back to partition: " + validationError);
-        candidate = PartitioningAlgorithm(problem_).solve(timeoutSeconds);
-        std::string fallbackError;
-        if (!candidate.validate(problem_, &fallbackError)) {
-            throw std::runtime_error(
-                "partition fallback produced an invalid solution: " + fallbackError);
-        }
-        candidate.meta["algorithm_implementation"] = "partition";
-        candidate.meta["candidate_source"] = "partition_fallback";
-        candidate.meta["fallback_algorithm"] = "partition";
-        candidate.meta["fallback_reason"] = validationError;
-    } else {
-        candidate.meta["algorithm_implementation"] = algorithm;
-        candidate.meta["candidate_source"] = algorithm;
+        throw std::runtime_error(
+            "algorithm " + algorithm + " produced an invalid candidate: " +
+            validationError);
     }
+    candidate.meta["algorithm_implementation"] = algorithm;
+    candidate.meta["candidate_source"] = algorithm;
     candidate.meta["requested_algorithm"] = algorithm;
     if (!routeAssignmentScope.empty()) {
         candidate.meta["requested_route_assignment_scope"] = routeAssignmentScope;
         candidate.meta["effective_route_assignment_scope"] =
-            candidate.meta["algorithm_implementation"] == "partition"
-                ? "multi_cutter_partition"
-                : routeAssignmentScope;
+            routeAssignmentScope;
     }
     return candidate;
 }

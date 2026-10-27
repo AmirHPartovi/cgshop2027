@@ -15,6 +15,7 @@ struct AlgorithmParameters {
 };
 
 struct RuntimeConfig {
+    std::string solverMode{"heuristic"};
     double globalRunDeadlineSeconds{-1.0};
     double perInstanceTimeoutSeconds{10.0};
     double perAlgorithmTimeoutSeconds{10.0};
@@ -30,8 +31,7 @@ struct RuntimeConfig {
     int exactSolverMaxCandidates{0};
     double exactSolverExploratoryTimeBudgetSeconds{0.0};
     std::vector<std::string> heuristicPortfolio{
-        "boustrophedon", "stc", "frederickson", "mstc",
-        "region-partition", "ilp", "connected-growth", "tsp-cov"};
+        "frederickson", "mstc"};
     int randomizedRepetitions{1};
     std::string outputDirectory{"build/results"};
     bool overwriteExisting{false};

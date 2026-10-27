@@ -25,6 +25,7 @@ set(CORE_SOURCES
     src/core/GeometryUtils.cpp
     src/core/Problem.cpp
     src/core/Solution.cpp
+    src/core/SolverResult.cpp
     src/core/RuntimeConfig.cpp
     src/core/ExecutionControl.cpp
     src/io/InstanceReader.cpp
@@ -50,6 +51,10 @@ set(ALGORITHM_SOURCES
     src/algorithms/ColumnGenerationAlgorithm.cpp
     src/algorithms/LnsMultiCutterAlgorithm.cpp
     src/algorithms/HybridSolver.cpp
+    src/algorithms/RegionPartitioner.cpp
+    src/algorithms/LocalSubproblemSolver.cpp
+    src/algorithms/MergeSolver.cpp
+    src/algorithms/DecomposeSolver.cpp
 )
 
 add_library(cgshop_core ${CORE_SOURCES} ${UTIL_SOURCES} ${ALGORITHM_SOURCES})
@@ -57,6 +62,7 @@ target_include_directories(cgshop_core PUBLIC src)
 target_compile_definitions(cgshop_core PUBLIC
     CGSHOP_PROJECT_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
     CGSHOP_DEFAULT_CONFIG="${CMAKE_SOURCE_DIR}/config/default.json"
+    CGSHOP_SOLVER_MODES_CONFIG="${CMAKE_SOURCE_DIR}/config/solver_modes.json"
 )
 if(KONT_CMD_EXECUTABLE)
     target_compile_definitions(cgshop_core PRIVATE

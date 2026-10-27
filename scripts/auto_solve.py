@@ -19,11 +19,13 @@ from benchmark import (
     run_bounded_process_with_metrics,
 )
 from profile_instances import DEFAULT_THRESHOLDS
-from runtime_config import ROOT, load_runtime_config
+from runtime_config import CANONICAL_SOLVER_MODES, ROOT, load_runtime_config
 from reference_comparison import compare_instance_results
 from solution_metrics import makespan
+from solver_result import read_solver_result
 from solver_policy import (
     DEFAULT_POLICY,
+    build_mode_plan,
     build_plan,
     select_candidate,
 )
@@ -98,6 +100,7 @@ def run_candidate(
     config = runtime["effective"]
     command = [
         str(solver), "-i", str(instance), "-o", str(output),
+        "--mode", "heuristic",
         "--algorithm", algorithm,
         "--instance-timeout", str(timeout),
         "--algorithm-timeout", str(timeout),
@@ -109,6 +112,9 @@ def run_candidate(
         "--benchmark-jobs", "1",
         "--seed", str(seed),
         "--lns-iterations", str(config["algorithm_parameters"]["lns_iterations"]),
+        "--lns-max-anchors", str(config["algorithm_parameters"]["lns_max_anchors"]),
+        "--lns-max-move-anchors",
+        str(config["algorithm_parameters"]["lns_max_move_anchors"]),
         "--tsp-max-anchors", str(config["algorithm_parameters"]["tsp_max_anchors"]),
         "--two-opt-passes", str(config["algorithm_parameters"]["two_opt_passes"]),
         "--exact-policy", (
@@ -205,7 +211,8 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     policy_group = parser.add_mutually_exclusive_group()
     policy_group.add_argument("--policy", choices=("auto", "heuristic", "exact"),
-                              default="auto")
+                              default=None)
+    policy_group.add_argument("--mode", choices=CANONICAL_SOLVER_MODES)
     policy_group.add_argument("--algorithm",
                               help="force one explicit algorithm; does not use auto")
     parser.add_argument("--include-ip-kont-surrogate", action="store_true",
@@ -224,6 +231,8 @@ def main() -> int:
     instance = args.instance.resolve()
     output = args.output.resolve()
     selection_report_path = Path(str(output) + ".selection.json")
+    solver_result_path = Path(str(output) + ".result.json")
+    solver_config_path = Path(str(output) + ".config.json")
     try:
         runtime_requested, runtime_effective, adjustments = load_runtime_config(
             args.config,
@@ -236,6 +245,13 @@ def main() -> int:
         "effective": runtime_effective,
         "automatic_adjustments": adjustments,
     }
+    selected_mode = args.mode or (
+        "heuristic" if args.policy is not None or args.algorithm is not None
+        else runtime_effective["solver_mode"]
+    )
+    requested_policy = args.policy or "auto"
+    if args.algorithm is not None and selected_mode != "heuristic":
+        parser.error("--algorithm is only supported by the heuristic solver mode")
     if not instance.is_file():
         parser.error(f"instance file not found: {instance}")
     if not args.solver.is_file() or not os.access(args.solver, os.X_OK):
@@ -247,9 +263,11 @@ def main() -> int:
     if runtime_effective["per_algorithm_timeout_seconds"] <= 0:
         parser.error("auto solving requires per_algorithm_timeout_seconds > 0")
     overwrite_allowed = args.overwrite or runtime_effective["overwrite_existing"]
-    if (output.exists() or selection_report_path.exists()) and not overwrite_allowed:
+    if (output.exists() or selection_report_path.exists() or solver_result_path.exists() or
+            solver_config_path.exists()) and not overwrite_allowed:
         parser.error(f"output or selection report exists; refusing overwrite: {output}")
-    if output == instance or selection_report_path == instance:
+    if (output == instance or selection_report_path == instance or
+            solver_result_path == instance or solver_config_path == instance):
         parser.error("output and selection report must not overwrite the input instance")
     if (output.exists() and not output.is_file()) or (
         selection_report_path.exists() and not selection_report_path.is_file()
@@ -261,24 +279,204 @@ def main() -> int:
         if runtime_effective["global_run_deadline_seconds"] is not None else None
     )
     try:
-        plan = build_plan(
-            instance,
-            args.thresholds.resolve(),
-            args.policy_config.resolve(),
-            requested_policy=args.policy,
-            forced_algorithm=args.algorithm,
-            include_ip_kont_surrogate=args.include_ip_kont_surrogate,
-            surrogate_allowed_by_runtime_config=(
-                runtime_effective["exact_solving_policy"] == "ip_kont_surrogate"
-            ),
+        plan = (
+            build_plan(
+                instance,
+                args.thresholds.resolve(),
+                args.policy_config.resolve(),
+                requested_policy=requested_policy,
+                forced_algorithm=args.algorithm,
+                include_ip_kont_surrogate=args.include_ip_kont_surrogate,
+                surrogate_allowed_by_runtime_config=(
+                    runtime_effective["exact_solving_policy"] == "ip_kont_surrogate"
+                ),
+            )
+            if selected_mode == "heuristic" and args.mode is None and
+            args.policy != "heuristic" else
+            build_mode_plan(
+                selected_mode, instance, args.thresholds.resolve(),
+                args.policy_config.resolve(),
+            )
         )
     except (OSError, ValueError, KeyError, TypeError) as error:
         parser.error(str(error))
+    if selected_mode == "ip-kont":
+        timeout = min(
+            runtime_effective["per_instance_timeout_seconds"],
+            runtime_effective["per_algorithm_timeout_seconds"],
+        )
+        command = [
+            str(args.solver.resolve()), "-i", str(instance), "-o", str(output),
+            "--config", str(args.config.resolve()), "--mode", selected_mode,
+            "--instance-timeout", str(timeout),
+            "--algorithm-timeout", str(timeout), "--memory-limit-mib",
+            str(runtime_effective["memory_limit_mib"]),
+        ]
+        if overwrite_allowed:
+            command.append("--overwrite")
+        code, stdout, stderr, limit_error, metrics = run_bounded_process_with_metrics(
+            command, timeout, runtime_effective["memory_limit_mib"]
+        )
+        try:
+            mode_result = read_solver_result(solver_result_path)
+        except ValueError as error:
+            parser.error(
+                f"solver mode did not persist its result contract: {error}; "
+                f"exit={code}, stderr={stderr.strip()}, limit={limit_error}"
+            )
+        if (mode_result.get("solver_completion_status") != "unavailable" or
+                mode_result.get("candidate_exists") is not False or
+                mode_result.get("optimality_proved") is not False):
+            parser.error(
+                "unimplemented ip-kont mode violated the unavailable/no-proof contract"
+            )
+        report = {
+            "schema_version": 1,
+            "requested": {
+                "solver_mode": selected_mode,
+                "instance": str(instance),
+                "output": str(output),
+            },
+            "effective": plan,
+            "runtime_configuration": runtime,
+            "solver_result": mode_result,
+            "process": {
+                "exit_code": code,
+                "stdout": stdout.strip(),
+                "stderr": stderr.strip(),
+                "limit_error": limit_error,
+                **_resource_fields(metrics),
+            },
+        }
+        selection_report_path.write_text(
+            json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        print(f"selection report: {selection_report_path}")
+        return 1
+    if selected_mode == "decompose":
+        if not official_validator_available():
+            parser.error(
+                "decomposition solving requires cgshop2027_pyutils for official validation"
+            )
+        timeout = min(
+            runtime_effective["per_instance_timeout_seconds"],
+            runtime_effective["per_algorithm_timeout_seconds"],
+        )
+        output.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="cgshop-decompose-") as temporary:
+            candidate_path = Path(temporary) / "decomposition-candidate.solution.json"
+            command = [
+                str(args.solver.resolve()), "-i", str(instance), "-o",
+                str(candidate_path), "--config", str(args.config.resolve()),
+                "--mode", "decompose", "--instance-timeout", str(timeout),
+                "--algorithm-timeout", str(timeout), "--memory-limit-mib",
+                str(runtime_effective["memory_limit_mib"]),
+                "--seed", str(runtime_effective["random_seed"]),
+            ]
+            if overwrite_allowed:
+                command.append("--overwrite")
+            code, stdout, stderr, limit_error, metrics = (
+                run_bounded_process_with_metrics(
+                    command, timeout, runtime_effective["memory_limit_mib"]
+                )
+            )
+            try:
+                mode_result = read_solver_result(
+                    Path(str(candidate_path) + ".result.json")
+                )
+            except ValueError as error:
+                parser.error(
+                    f"decompose mode did not persist its result contract: {error}; "
+                    f"exit={code}, stderr={stderr.strip()}, limit={limit_error}"
+                )
+            validation_status = "not_run"
+            validation_message = "solver produced no candidate"
+            validation_metrics: dict[str, Any] = {}
+            if mode_result.get("candidate_exists") is True and candidate_path.is_file():
+                validation_timeout = args.validation_timeout
+                if global_deadline is not None:
+                    validation_timeout = min(
+                        validation_timeout, global_deadline - time.monotonic()
+                    )
+                if validation_timeout > 0:
+                    validation_status, validation_message, validation_metrics = (
+                        _official_validate(
+                            instance, candidate_path, validation_timeout,
+                            runtime_effective["memory_limit_mib"],
+                        )
+                    )
+                else:
+                    validation_status = "global_deadline"
+                    validation_message = (
+                        "global deadline reached before official validation"
+                    )
+            mode_result["official_validation_status"] = (
+                "passed" if validation_status == "ok" else
+                "failed"
+                if validation_status not in {"not_run", "global_deadline"}
+                else "not_requested"
+            )
+            if validation_status == "ok":
+                mode_result["candidate_solution_path"] = str(output)
+                shutil.copyfile(candidate_path, output)
+            else:
+                mode_result["candidate_solution_path"] = None
+            solver_result_path.write_text(
+                json.dumps(mode_result, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            report = {
+                "schema_version": 1,
+                "requested": {
+                    "solver_mode": selected_mode,
+                    "instance": str(instance),
+                    "output": str(output),
+                },
+                "effective": plan,
+                "runtime_configuration": runtime,
+                "solver_result": mode_result,
+                "official_validation": {
+                    "status": validation_status,
+                    "message": validation_message,
+                    **_resource_fields(validation_metrics),
+                },
+                "process": {
+                    "exit_code": code,
+                    "stdout": stdout.strip(),
+                    "stderr": stderr.strip(),
+                    "limit_error": limit_error,
+                    **_resource_fields(metrics),
+                },
+            }
+            selection_report_path.write_text(
+                json.dumps(report, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+        print(f"selection report: {selection_report_path}")
+        if validation_status != "ok":
+            print(
+                f"no officially validated decomposition candidate: "
+                f"{validation_status} ({validation_message})",
+                file=sys.stderr,
+            )
+            return 1
+        print(
+            f"selected decompose makespan={makespan(json.loads(output.read_text(encoding='utf-8')))} "
+            "official_validated=True optimality_certified=False"
+        )
+        return 0
     if not official_validator_available():
         parser.error("auto solving requires cgshop2027_pyutils for official candidate selection")
+    plan["solver_mode"] = selected_mode
 
     output.parent.mkdir(parents=True, exist_ok=True)
     requested_timeout = plan["per_algorithm_timeout_seconds"]
+    if args.mode == "heuristic":
+        requested_timeout = min(
+            runtime_effective["per_instance_timeout_seconds"],
+            runtime_effective["per_algorithm_timeout_seconds"],
+        )
+        plan["per_algorithm_timeout_seconds"] = requested_timeout
     if args.algorithm:
         requested_timeout = min(
             runtime_effective["per_instance_timeout_seconds"],
@@ -338,7 +536,11 @@ def main() -> int:
         report = {
             "schema_version": 1,
             "requested": {
-                "execution_policy": args.policy if args.algorithm is None else "forced_algorithm",
+                "execution_policy": (
+                    selected_mode if args.mode is not None else
+                    requested_policy if args.algorithm is None else "forced_algorithm"
+                ),
+                "solver_mode": "heuristic",
                 "algorithm": args.algorithm,
                 "include_ip_kont_surrogate": args.include_ip_kont_surrogate,
                 "instance": str(instance),

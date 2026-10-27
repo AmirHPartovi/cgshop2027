@@ -36,9 +36,22 @@ test runs under the supported interpreter (Python 3.10 or newer).
 
 ```sh
 build/bin/solver -i tests/fixtures/instances/tiny-square.instance.json \
-  -o result.solution.json \
-  -a partition -t 10
+  -o result.solution.json --mode heuristic -t 10
 ```
+
+The canonical public modes are registered in `config/solver_modes.json` and
+shared by the C++ CLI and Python runners: `heuristic`, `ip-kont`, and
+`decompose`. `heuristic` currently dispatches to the hybrid portfolio. The
+`decompose` mode adaptively partitions target cells, generates heuristic local
+route options, and merges them into globally connected closed tours. It is a
+decomposition heuristic, not a globally exact method; its local options are
+not solved exactly, and the merge stage is heuristic. Partition features and
+cutter allocations are recorded in the solution metadata. `ip-kont` remains
+explicitly unavailable until an equivalent original-objective model is
+implemented and verified; it never invokes the legacy vertical-column
+surrogate. Existing `--algorithm` names and aliases remain available as
+heuristic-component overrides for migration and benchmarking. The legacy
+`--algorithm` override cannot be combined with `ip-kont` or `decompose`.
 
 ## Runtime configuration
 
@@ -55,8 +68,12 @@ build/bin/solver -i tests/fixtures/instances/tiny-square.instance.json \
   boustrophedon,stc,frederickson,mstc,region-partition,ilp,connected-growth,tsp-cov
 ```
 
-Each solver output has a sibling `<solution>.config.json` containing requested
-and effective settings. Batch runs also write `runtime-config.json` and
+Each solver output has sibling `<solution>.config.json` and
+`<solution>.result.json` reports. The latter separates candidate existence,
+internal and official validation, completion status, optimality proof scope,
+actual implementation, candidate provenance, runtime, and termination reason.
+Unavailable modes write the result report without writing a solution.
+Batch runs also write `runtime-config.json` and
 per-solver reports. Benchmark reports include the effective worker product
 (`benchmark_jobs * threads_per_solver`) and any automatic reduction of
 `benchmark_jobs` to the detected CPU-worker count. The current algorithms are
@@ -70,8 +87,11 @@ and IP-KONT timeout caps its optional child process within both parent
 deadlines. Deadlines use monotonic clocks. Cooperative search reserves up to
 five seconds (20% of the run, with a 250 ms minimum) for final validation and
 output; an already validated hybrid incumbent is retained when later work is
-cancelled. If an algorithm is interrupted before it returns a candidate, the
-solver attempts a partition fallback within the reserved finalization window.
+cancelled. If a heuristic is interrupted before it returns a candidate, the heuristic
+orchestration boundary may attempt a partition fallback within the reserved
+finalization window. Algorithm-level candidate validation rejects invalid
+outputs rather than silently substituting a fallback; exact modes cannot
+inherit heuristic fallback candidates.
 All limits are in seconds and the batch runner also enforces the remaining
 global budget externally.
 
@@ -199,13 +219,17 @@ python3 scripts/auto_solve.py --instance INSTANCE --output OUTPUT \
   --algorithm partition
 python3 scripts/auto_solve.py --instance INSTANCE --output OUTPUT \
   --policy heuristic
+python3 scripts/auto_solve.py --instance INSTANCE --output OUTPUT \
+  --mode decompose
 ```
 
 The default is `--policy auto`; `--policy heuristic` explicitly requests the
 tier portfolio, and `--algorithm NAME` forces one named algorithm rather than
 silently entering auto mode. `--policy exact` fails before solving because no
 mathematically exact method for the original closed-tour makespan objective
-exists in this repository. `config/auto_policy.json` contains tier portfolios,
+exists in this repository. `--mode decompose` invokes the adaptive
+decomposition heuristic once and only publishes its candidate after official
+validation. `config/auto_policy.json` contains tier portfolios,
 per-candidate timeouts, exact-method availability, and the IP-KONT surrogate
 probe size/time limits. Runtime timeouts and memory limits still cap those
 policy budgets. The defaults run 3 LIGHT candidates with up to 10 seconds each,
@@ -227,11 +251,13 @@ does not qualify candidates for selection. The requested policy/algorithm,
 estimated tier, actually executed candidates, per-candidate status, selected
 algorithm and solution, official-validation status, candidate provenance,
 selection reason, and optimality certification status are saved in
-`<output>.selection.json`. If no official candidate exists, the runner exits
+``<output>.selection.json`. Public mode calls also write `<output>.result.json`.
+If no official candidate exists, the runner exits
 nonzero and writes no solution. Existing outputs are refused unless
-`--overwrite` is passed or central `overwrite_existing` is enabled. The exact
-model status remains `unavailable`; heuristic fallback after a timeout never
-changes that status.
+`--overwrite` is passed or central `overwrite_existing` is enabled. The
+`ip-kont` exact-model status remains `unavailable`; the `decompose` mode is
+reported as feasible-not-proven even when a merged candidate is officially
+validated.
 
 Algorithms are `strip`, `partition`, `local`, `anchor-cover`,
 `balanced-greedy`, `boustrophedon` (A1), `stc` (A2), `tsp-cov` (A3),

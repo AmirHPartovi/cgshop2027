@@ -2,6 +2,7 @@
 #include "algorithms/BalancedGreedyRouteAlgorithm.h"
 #include "algorithms/BoustrophedonAlgorithm.h"
 #include "algorithms/ColumnGenerationAlgorithm.h"
+#include "algorithms/DecomposeSolver.h"
 #include "algorithms/FredericksonSplitAlgorithm.h"
 #include "algorithms/HybridSolver.h"
 #include "algorithms/IlpAlgorithm.h"
@@ -15,6 +16,7 @@
 #include "algorithms/TspCovAlgorithm.h"
 #include "core/ExecutionControl.h"
 #include "core/RuntimeConfig.h"
+#include "core/SolverResult.h"
 #include "io/InstanceReader.h"
 #include "io/SolutionWriter.h"
 #include "utils/Logger.h"
@@ -46,12 +48,14 @@ struct Options {
     std::string configPath;
     bool help{false};
     bool validateInstanceOnly{false};
+    bool algorithmSpecified{false};
     std::vector<std::string> overrides;
 };
 
 const char kUsage[] =
     "usage: solver -i INSTANCE -o OUTPUT [--config FILE] [options]\n"
-    "  -a, --algorithm NAME          selected algorithm (default: hybrid)\n"
+    "      --mode MODE               heuristic|ip-kont|decompose (default: heuristic)\n"
+    "  -a, --algorithm NAME          legacy heuristic component override\n"
     "  -t, --timeout SECONDS         set instance and algorithm timeout\n"
     "      --instance-timeout SEC    per-instance cooperative wall-clock limit\n"
     "      --algorithm-timeout SEC   algorithm time budget\n"
@@ -67,7 +71,7 @@ const char kUsage[] =
     "      --tsp-max-anchors N       TSP-COV candidate cap\n"
     "      --two-opt-passes N        TSP-COV 2-opt pass cap\n"
     "      --tier all                difficulty filter (only 'all' is supported)\n"
-    "      --exact-policy POLICY     disabled or ip_kont_surrogate (not exact routing)\n"
+    "      --exact-policy POLICY     legacy surrogate policy; not exact routing\n"
     "      --exact-max-candidates N  skip IP-KONT surrogate above this size (0=unlimited)\n"
     "      --exact-exploratory-budget SEC (unsupported until tier classification)\n"
     "      --portfolio CSV           hybrid portfolio algorithm names\n"
@@ -112,9 +116,14 @@ Options parseOptions(int argc, char** argv) {
         } else if (argument == "-o" || argument == "--output") {
             if (++i >= argc) throw std::runtime_error("missing output path");
             options.output = argv[i];
+        } else if (argument == "--mode") {
+            if (++i >= argc) throw std::runtime_error("missing solver mode");
+            options.overrides.emplace_back("solver_mode");
+            options.overrides.emplace_back(argv[i]);
         } else if (argument == "-a" || argument == "--algo" ||
                    argument == "--algorithm") {
             if (++i >= argc) throw std::runtime_error("missing algorithm name");
+            options.algorithmSpecified = true;
             options.overrides.emplace_back("algorithms");
             options.overrides.emplace_back(argv[i]);
         } else if (argument == "-t" || argument == "--timeout") {
@@ -171,7 +180,8 @@ void applyOverrides(cgshop2027::RuntimeConfig& config,
     for (size_t i = 0; i < overrides.size(); i += 2U) {
         const std::string& key = overrides[i];
         const std::string& value = overrides[i + 1U];
-        if (key == "algorithms") config.algorithms = {value};
+        if (key == "solver_mode") config.solverMode = value;
+        else if (key == "algorithms") config.algorithms = {value};
         else if (key == "timeout") {
             config.perInstanceTimeoutSeconds = parseDouble(value, key);
             config.perAlgorithmTimeoutSeconds = config.perInstanceTimeoutSeconds;
@@ -282,9 +292,25 @@ void configureLogging(const std::string& level) {
     else if (level == "error") cgshop2027::Logger::instance().setLevel(LogLevel::Error);
 }
 
+void writeResultReport(const std::string& path,
+                       const cgshop2027::SolverResult& result,
+                       const std::string& candidatePath = {}) {
+    const std::filesystem::path resultPath(path);
+    if (!resultPath.parent_path().empty()) {
+        std::filesystem::create_directories(resultPath.parent_path());
+    }
+    std::ofstream output(path);
+    if (!output) throw std::runtime_error("cannot write solver result report");
+    output << result.toJson(candidatePath);
+    if (!output) throw std::runtime_error("failed writing solver result report");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
+    std::string failureResultPath;
+    std::string failureSolverMode;
+    const auto processStarted = std::chrono::steady_clock::now();
     try {
         const Options options = parseOptions(argc, argv);
         if (options.help) {
@@ -301,6 +327,11 @@ int main(int argc, char** argv) {
         auto config = cgshop2027::RuntimeConfig::load(options.configPath);
         applyOverrides(config, options.overrides);
         config.validate();
+        failureSolverMode = config.solverMode;
+        if (options.algorithmSpecified && config.solverMode != "heuristic") {
+            throw std::runtime_error(
+                "--algorithm is a legacy heuristic override and requires --mode heuristic");
+        }
         if (config.officialValidation) {
             throw std::runtime_error(
                 "official validation runs in scripts/benchmark.py or scripts/solve_all.py, not in the C++ solver");
@@ -314,10 +345,14 @@ int main(int argc, char** argv) {
         }
         const std::filesystem::path outputPath(options.output);
         const std::filesystem::path reportPath(options.output + ".config.json");
+        const std::filesystem::path resultPath(options.output + ".result.json");
+        failureResultPath = resultPath.string();
         if (!config.overwriteExisting &&
-            (std::filesystem::exists(outputPath) || std::filesystem::exists(reportPath))) {
+            (std::filesystem::exists(outputPath) ||
+             std::filesystem::exists(reportPath) ||
+             std::filesystem::exists(resultPath))) {
             throw std::runtime_error(
-                "output or effective-configuration report already exists; pass --overwrite");
+                "output or solver report already exists; pass --overwrite");
         }
 
         cgshop2027::setRuntimeConfig(config);
@@ -331,12 +366,40 @@ int main(int argc, char** argv) {
         if (!report) throw std::runtime_error("failed writing effective configuration report");
         report.close();
         cgshop2027::LogScope scope("solver", "run");
+        const auto started = std::chrono::steady_clock::now();
+        auto problem = cgshop2027::InstanceReader::readInstance(options.input);
+        if (config.solverMode == "ip-kont") {
+            cgshop2027::SolverResult result;
+            result.solverMode = config.solverMode;
+            result.completion = cgshop2027::SolverCompletionStatus::Unavailable;
+            result.algorithmImplementation = config.solverMode;
+            result.terminationReason =
+                "the verified exact closed-tour IP-KONT model is not implemented; legacy ilp is a surrogate";
+            result.runtimeSeconds = std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - started).count();
+            writeResultReport(resultPath.string(), result);
+            cgshop2027::Logger::instance().error(
+                "solver", config.solverMode + " mode unavailable: " +
+                              result.terminationReason);
+            return EXIT_FAILURE;
+        }
         const double timeout = std::min(
             config.perInstanceTimeoutSeconds,
             std::min(config.perAlgorithmTimeoutSeconds,
                      config.globalRunDeadlineSeconds < 0.0
                          ? config.perInstanceTimeoutSeconds
                          : config.globalRunDeadlineSeconds));
+        if (timeout <= 0.0) {
+            cgshop2027::SolverResult result;
+            result.solverMode = config.solverMode;
+            result.completion =
+                cgshop2027::SolverCompletionStatus::TimedOutWithoutIncumbent;
+            result.terminationReason = "effective solver timeout is zero";
+            result.runtimeSeconds = std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - started).count();
+            writeResultReport(resultPath.string(), result);
+            return EXIT_FAILURE;
+        }
         configureDeadline(timeout);
         const auto invocationDeadline =
             cgshop2027::ExecutionControl::Clock::now() +
@@ -349,15 +412,17 @@ int main(int argc, char** argv) {
             invocationDeadline -
             std::chrono::duration_cast<cgshop2027::ExecutionControl::Clock::duration>(
                 std::chrono::duration<double>(finalizationReserve)));
-        const std::string& algorithmName = config.algorithms.front();
+        const std::string algorithmName =
+            config.solverMode == "decompose" ? "decompose" : config.algorithms.front();
         cgshop2027::Logger::instance().info(
             "solver", "algorithm=" + algorithmName + " effective_timeout=" +
                           std::to_string(timeout) + "s cooperative_search_cap=" +
                           std::to_string(searchTimeout) + "s finalization_reserve=" +
                           std::to_string(finalizationReserve) + "s");
-        auto problem = cgshop2027::InstanceReader::readInstance(options.input);
         std::unique_ptr<cgshop2027::BaseAlgorithm> algorithm;
-        if (algorithmName == "anchor-cover" || algorithmName == "anchor") {
+        if (algorithmName == "decompose") {
+            algorithm = std::make_unique<cgshop2027::DecomposeSolver>(*problem);
+        } else if (algorithmName == "anchor-cover" || algorithmName == "anchor") {
             algorithm = std::make_unique<cgshop2027::AnchorCoverAlgorithm>(*problem);
         } else if (algorithmName == "balanced-greedy" || algorithmName == "greedy") {
             algorithm = std::make_unique<cgshop2027::BalancedGreedyRouteAlgorithm>(*problem);
@@ -418,6 +483,14 @@ int main(int argc, char** argv) {
             solution.meta["fallback_algorithm"] = "partition";
             solution.meta["fallback_reason"] =
                 "requested algorithm exceeded cooperative deadline";
+            if (config.solverMode == "decompose") {
+                solution.meta["decomposition_status"] =
+                    "TIME_LIMIT_WITH_PARTITION_INCUMBENT";
+                solution.meta["decomposition_exact"] = "false";
+                solution.meta["decomposition_local_exact"] = "false";
+                solution.meta["decomposition_local_solver"] =
+                    "not_started_before_deadline";
+            }
         }
         cgshop2027::ExecutionControl::instance().clearDeadline();
         if (solution.meta.find("requested_algorithm") == solution.meta.end())
@@ -439,17 +512,94 @@ int main(int argc, char** argv) {
             if (solution.meta.find("candidate_source") == solution.meta.end())
                 solution.meta["candidate_source"] = "requested_algorithm";
         }
+        const std::string executionStatus = solution.meta.at("execution_status");
+        const bool hasTimedOutStatus =
+            timedOutWithFallback ||
+            executionStatus == "TIME_LIMIT_WITH_FEASIBLE_CANDIDATE" ||
+            executionStatus == "TIME_LIMIT_WITH_INCUMBENT" ||
+            executionStatus == "WALL_CLOCK_TIMEOUT_WITH_FEASIBLE_INCUMBENT";
         std::string error;
         if (!solution.validate(*problem, &error)) {
+            cgshop2027::SolverResult result;
+            result.solverMode = config.solverMode;
+            result.candidate = solution;
+            result.internalValidation =
+                cgshop2027::CandidateValidationStatus::Failed;
+            result.completion = cgshop2027::SolverCompletionStatus::Failed;
+            result.algorithmImplementation =
+                solution.meta.count("algorithm_implementation") != 0U
+                    ? solution.meta.at("algorithm_implementation") : algorithmName;
+            result.candidateSource =
+                solution.meta.count("candidate_source") != 0U
+                    ? solution.meta.at("candidate_source") : "unknown";
+            result.runtimeSeconds = std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - started).count();
+            result.terminationReason = "final validation rejected candidate: " + error;
+            writeResultReport(resultPath.string(), result);
             throw std::runtime_error("algorithm produced invalid solution: " + error);
         }
+        cgshop2027::SolverResult result;
+        result.solverMode = config.solverMode;
+        result.candidate = solution;
+        result.internalValidation = cgshop2027::CandidateValidationStatus::Passed;
+        result.completion = hasTimedOutStatus
+                                ? cgshop2027::SolverCompletionStatus::TimedOutWithIncumbent
+                                : cgshop2027::SolverCompletionStatus::FeasibleNotProven;
+        result.algorithmImplementation = solution.meta.at("algorithm_implementation");
+        result.candidateSource = solution.meta.at("candidate_source");
+        result.runtimeSeconds = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - started).count();
+        result.terminationReason = hasTimedOutStatus
+                                       ? "cooperative deadline reached; retained feasible heuristic candidate"
+                                       : "heuristic search completed without an optimality proof";
+        solution.meta["solver_mode"] = config.solverMode;
+        solution.meta["solver_completion_status"] =
+            cgshop2027::toString(result.completion);
+        solution.meta["internal_validation_status"] = "passed";
+        solution.meta["official_validation_status"] = "not_requested";
+        solution.meta["optimality_proved"] = "false";
+        solution.meta["runtime_seconds"] = std::to_string(result.runtimeSeconds);
+        solution.meta["termination_reason"] = result.terminationReason;
         cgshop2027::SolutionWriter::write(solution, *problem, options.output);
+        writeResultReport(resultPath.string(), result, options.output);
         disableDeadline();
         cgshop2027::Logger::instance().info(
             "solver", "validated solution uid=" + solution.instanceUid);
         return EXIT_SUCCESS;
+    } catch (const cgshop2027::ExecutionCancelled&) {
+        cgshop2027::Logger::instance().error(
+            "solver", "cooperative deadline reached before a valid candidate was produced");
+        if (!failureResultPath.empty() &&
+            !std::filesystem::exists(failureResultPath)) {
+            cgshop2027::SolverResult result;
+            result.solverMode = failureSolverMode;
+            result.completion =
+                cgshop2027::SolverCompletionStatus::TimedOutWithoutIncumbent;
+            result.terminationReason =
+                "cooperative deadline reached before a valid candidate was produced";
+            result.runtimeSeconds = std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - processStarted).count();
+            writeResultReport(failureResultPath, result);
+        }
+        return EXIT_FAILURE;
     } catch (const std::exception& exception) {
         cgshop2027::Logger::instance().error("solver", exception.what());
+        if (!failureResultPath.empty() &&
+            !std::filesystem::exists(failureResultPath)) {
+            try {
+                cgshop2027::SolverResult result;
+                result.solverMode = failureSolverMode;
+                result.completion = cgshop2027::SolverCompletionStatus::Failed;
+                result.terminationReason = exception.what();
+                result.runtimeSeconds = std::chrono::duration<double>(
+                    std::chrono::steady_clock::now() - processStarted).count();
+                writeResultReport(failureResultPath, result);
+            } catch (const std::exception& reportError) {
+                cgshop2027::Logger::instance().error(
+                    "solver", std::string("cannot persist failure result: ") +
+                                  reportError.what());
+            }
+        }
         return EXIT_FAILURE;
     }
 }

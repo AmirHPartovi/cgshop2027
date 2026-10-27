@@ -1,5 +1,10 @@
 {
   "policy_version": "cgshop-auto-policy-v1",
+  "public_mode_dispatch": {
+    "heuristic": "hybrid_candidate_generation_and_lns",
+    "ip-kont": "unavailable_exact_model",
+    "decompose": "adaptive_region_partition_heuristic"
+  },
   "exact_model": {
     "available_for_original_closed_tour_objective": false,
     "method": null,

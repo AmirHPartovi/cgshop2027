@@ -12,6 +12,17 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG_PATH = ROOT / "config/default.json"
+SOLVER_MODES_PATH = ROOT / "config/solver_modes.json"
+try:
+    _mode_registry = json.loads(SOLVER_MODES_PATH.read_text(encoding="utf-8"))
+    _registered_modes = _mode_registry["canonical_modes"]
+    if (not isinstance(_registered_modes, list) or not _registered_modes or
+            any(not isinstance(mode, str) or not mode for mode in _registered_modes) or
+            len(_registered_modes) != len(set(_registered_modes))):
+        raise ValueError("canonical_modes must contain distinct nonempty strings")
+    CANONICAL_SOLVER_MODES = tuple(_registered_modes)
+except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
+    raise RuntimeError(f"cannot load canonical solver modes from {SOLVER_MODES_PATH}") from error
 ALGORITHM_ALIASES = {
     "anchor": "anchor-cover",
     "greedy": "balanced-greedy",
@@ -38,7 +49,7 @@ CANONICAL_ALGORITHMS = (
 ALGORITHMS = set(CANONICAL_ALGORITHMS) | set(ALGORITHM_ALIASES)
 PORTFOLIO_ALGORITHMS = {
     "boustrophedon", "stc", "frederickson", "mstc", "region-partition",
-    "ilp", "connected-growth", "column-gen", "c2", "bap", "tsp-cov",
+    "connected-growth", "column-gen", "c2", "bap", "tsp-cov",
 }
 RANDOMIZED_ALGORITHMS = {"local", "lns", "hybrid"}
 
@@ -46,7 +57,7 @@ RANDOMIZED_ALGORITHMS = {"local", "lns", "hybrid"}
 def canonical_algorithm_id(name: str) -> str:
     return ALGORITHM_ALIASES.get(name, name)
 CONFIG_KEYS = {
-    "global_run_deadline_seconds", "per_instance_timeout_seconds",
+    "solver_mode", "global_run_deadline_seconds", "per_instance_timeout_seconds",
     "per_algorithm_timeout_seconds", "ip_kont_timeout_seconds",
     "threads_per_solver", "benchmark_jobs", "memory_limit_mib", "random_seed",
     "algorithms", "algorithm_parameters", "difficulty_tier_filter",
@@ -160,6 +171,10 @@ def load_runtime_config(
             isinstance(requested["random_seed"], bool) or
             not 0 <= requested["random_seed"] <= 2147483647):
         raise ValueError("random_seed must be a nonnegative 32-bit integer")
+    if requested["solver_mode"] not in CANONICAL_SOLVER_MODES:
+        raise ValueError(
+            "solver_mode must be one of: " + ", ".join(CANONICAL_SOLVER_MODES)
+        )
     algorithms = requested["algorithms"]
     if (not isinstance(algorithms, list) or not algorithms or
             any(not isinstance(item, str) or item not in ALGORITHMS for item in algorithms) or

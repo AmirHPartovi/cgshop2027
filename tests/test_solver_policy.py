@@ -10,7 +10,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from solver_policy import build_plan, select_candidate  # noqa: E402
+from solver_policy import build_mode_plan, build_plan, select_candidate  # noqa: E402
 
 FIXTURE_THRESHOLDS = ROOT / "tests/fixtures/profiler/thresholds.json"
 
@@ -71,6 +71,29 @@ class SolverPolicyTests(unittest.TestCase):
                 self._fixture("light"), thresholds_path=FIXTURE_THRESHOLDS,
                 requested_policy="exact",
             )
+
+    def test_public_mode_plans_keep_unavailable_modes_out_of_heuristics(self):
+        plan = build_mode_plan("ip-kont", self._fixture("light"))
+        self.assertEqual(plan["solver_mode"], "ip-kont")
+        self.assertEqual(plan["algorithms_to_run"], [])
+        self.assertEqual(plan["solver_completion_status"], "unavailable")
+        self.assertFalse(plan["mode_available"])
+        self.assertIn("not implemented", plan["exact_method_reason"])
+        decomposition = build_mode_plan("decompose", self._fixture("light"))
+        self.assertEqual(decomposition["solver_mode"], "decompose")
+        self.assertEqual(decomposition["algorithms_to_run"], ["decompose"])
+        self.assertEqual(
+            decomposition["solver_completion_status"], "feasible_not_proven"
+        )
+        self.assertTrue(decomposition["mode_available"])
+        self.assertFalse(decomposition["decomposition_exact"])
+        heuristic = build_mode_plan(
+            "heuristic", self._fixture("light"),
+            thresholds_path=FIXTURE_THRESHOLDS,
+        )
+        self.assertEqual(heuristic["solver_mode"], "heuristic")
+        self.assertEqual(heuristic["algorithms_to_run"], ["hybrid"])
+        self.assertIn("LNS improvement", heuristic["selection_reason"])
 
     def test_ip_kont_is_explicitly_marked_as_non_exact_probe(self):
         plan = build_plan(
